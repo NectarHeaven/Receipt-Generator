@@ -13,7 +13,9 @@ st.set_page_config(page_title="Shree Gurudev Auto", layout="wide")
 # ==========================================
 class ReceiptPDF(FPDF):
     def header(self):
+        # This draws the outer bounding box on EVERY page
         self.rect(10, 10, 190, 254)
+        
         self.set_xy(10, 12)
         self.set_font("helvetica", "B", 18) 
         self.cell(110, 8, "SHREE GURUDEV AUTOMOBILES", border=0, ln=1, align="L")
@@ -31,6 +33,12 @@ class ReceiptPDF(FPDF):
             "TEL.No. :Nitin Zope 9323962011, 8369846161"
         )
         self.multi_cell(90, 4, address, border=0, align="R")
+
+    def footer(self):
+        # This automatically triggers at the bottom of EVERY page
+        self.set_xy(10, 266)
+        self.set_font("helvetica", "", 9)
+        self.cell(0, 5, f"PAGE NO. : {self.page_no()}", align="L")
 
     def add_customer_details(self, data):
         self.line(10, 32, 200, 32) 
@@ -84,10 +92,14 @@ class ReceiptPDF(FPDF):
         self.ln(8)
         self.line(10, 62, 200, 62)
 
-    def draw_grid_lines(self):
-        self.line(20, 54, 20, 240)   
+    def draw_grid_lines(self, is_last_page=True):
+        # If it's the last page, leave room for totals (stop at 240). 
+        # If middle page, draw lines to bottom of box (264).
+        col1_3_y = 240 if is_last_page else 264
+        
+        self.line(20, 54, 20, col1_3_y)   
         self.line(120, 54, 120, 264) 
-        self.line(140, 54, 140, 240) 
+        self.line(140, 54, 140, col1_3_y) 
         self.line(165, 54, 165, 264) 
 
     def add_footer_totals(self, totals_dict):
@@ -125,19 +137,15 @@ class ReceiptPDF(FPDF):
         self.set_font("helvetica", "", 9)
         self.cell(45, 6, "Received Amt", align="R")
         self.cell(35, 6, f"{float(totals_dict.get('Received_Amt', 0)):.2f}", align="R")
-        
-        self.set_xy(10, 266)
-        self.cell(0, 5, f"PAGE NO. : {self.page_no()}", align="L")
 
 def generate_pdf(data):
     pdf = ReceiptPDF(orientation="P", unit="mm", format="A4")
     
-    # Helper function to trigger a clean new page
     def create_new_page():
         pdf.add_page()
         pdf.add_customer_details(data)
         pdf.add_table_headers()
-        return 64 # Reset y_pos to just below the header
+        return 64
 
     y_pos = create_new_page()
     pdf.set_font("helvetica", "", 9)
@@ -154,7 +162,7 @@ def generate_pdf(data):
         
         # Pagination Check
         if start_y > 230:
-            pdf.draw_grid_lines()
+            pdf.draw_grid_lines(is_last_page=False) # Draw full lines for middle page
             y_pos = create_new_page() 
             pdf.set_font("helvetica", "", 9)
             start_y = pdf.get_y()
@@ -163,7 +171,7 @@ def generate_pdf(data):
         pdf.set_xy(10, start_y)
         pdf.cell(10, row_height, str(index + 1), border=0, align="C")
         
-        # 2. Product Name (This handles the long text wrapping)
+        # 2. Product Name
         pdf.set_xy(20, start_y)
         pdf.multi_cell(100, row_height, desc, border=0, align="L")
         
@@ -186,7 +194,7 @@ def generate_pdf(data):
         pdf.set_y(end_y)
         y_pos = end_y
         
-    pdf.draw_grid_lines()
+    pdf.draw_grid_lines(is_last_page=True) # Draw final lines leaving room for totals
     pdf.add_footer_totals(data)
     return bytes(pdf.output())
 
@@ -198,7 +206,6 @@ if 'pending_items' not in st.session_state: st.session_state.pending_items = []
 if 'next_invoice_no' not in st.session_state: st.session_state.next_invoice_no = 1
 if 'view_invoice' not in st.session_state: st.session_state.view_invoice = None
 
-# Explicitly initialize these so the input boxes are truly empty and ready
 if 'part_qty' not in st.session_state: st.session_state.part_qty = None
 if 'part_rate' not in st.session_state: st.session_state.part_rate = None
 
@@ -219,6 +226,18 @@ if not df_db.empty and 'Invoice_No' in df_db.columns:
     last_invoice = df_db['Invoice_No'].max()
     st.session_state.next_invoice_no = int(last_invoice) + 1 if pd.notna(last_invoice) else 1
 
+# --- NEW DELETE FUNCTION ---
+def delete_invoice(inv_no):
+    try:
+        df = conn.read(ttl=0) # Read freshest data
+        updated_df = df[df['Invoice_No'] != inv_no]
+        conn.update(worksheet="Sheet1", data=updated_df)
+        st.session_state.view_invoice = None
+        st.success(f"Invoice #{inv_no} deleted successfully!")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error deleting invoice: {e}")
+
 def add_part_callback():
     desc = st.session_state.part_desc.upper() if st.session_state.part_desc else ""
     qty = st.session_state.part_qty if st.session_state.part_qty is not None else 1
@@ -236,7 +255,7 @@ def add_part_callback():
 # 3. HELPER FUNCTIONS FOR UI
 # ==========================================
 def display_interactive_rows(df, prefix=""):
-    h1, h2, h3, h4, h5 = st.columns([1, 2, 3, 2, 3])
+    h1, h2, h3, h4, h5 = st.columns([1, 1.5, 3, 1.5, 3.5])
     h1.markdown("**Inv No**")
     h2.markdown("**Date**")
     h3.markdown("**Customer**")
@@ -245,27 +264,31 @@ def display_interactive_rows(df, prefix=""):
     st.divider()
 
     for idx, row in df.iterrows():
-        c1, c2, c3, c4, c5 = st.columns([1, 2, 3, 2, 3])
+        c1, c2, c3, c4, c5 = st.columns([1, 1.5, 3, 1.5, 3.5])
         c1.write(str(row['Invoice_No']))
         c2.write(str(row['Invoice_Date']))
         c3.write(str(row['Customer_Name']))
         c4.write(f"₹{float(row['Net_Total']):.2f}")
         
         with c5:
-            b_col1, b_col2 = st.columns(2)
-            # FIX: Added 'idx' to the key to prevent Duplicate ID errors
-            if b_col1.button("👁️ Preview", key=f"p_{prefix}_{idx}_{row['Invoice_No']}"):
+            # Added a 3rd button column for Deletion
+            b_col1, b_col2, b_col3 = st.columns([4, 4, 2])
+            
+            if b_col1.button("👁️ View", key=f"p_{prefix}_{idx}_{row['Invoice_No']}"):
                 st.session_state.view_invoice = row.to_dict()
-                st.rerun() # Force rerun immediately to trigger full-screen preview
+                st.rerun() 
                 
             pdf_bytes = generate_pdf(row.to_dict())
             b_col2.download_button("📥 PDF", data=pdf_bytes, file_name=f"Invoice_{row['Invoice_No']}.pdf", mime="application/pdf", key=f"d_{prefix}_{idx}_{row['Invoice_No']}")
+            
+            # The Delete Button
+            if b_col3.button("🗑️", key=f"del_{prefix}_{idx}_{row['Invoice_No']}"):
+                delete_invoice(row['Invoice_No'])
 
 # ==========================================
 # 4. MAIN UI ROUTING
 # ==========================================
 
-# If an invoice is selected for preview, take over the screen completely
 if st.session_state.view_invoice:
     data = st.session_state.view_invoice
     
@@ -294,7 +317,6 @@ if st.session_state.view_invoice:
     pdf_bytes = generate_pdf(data)
     action_col2.download_button("📥 Download Receipt (PDF)", data=pdf_bytes, file_name=f"Invoice_{data['Invoice_No']}.pdf", mime="application/pdf", type="primary", use_container_width=True)
 
-# Otherwise, show the normal Tabbed Interface
 else:
     tab_dash, tab_create, tab_search = st.tabs(["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"])
 
