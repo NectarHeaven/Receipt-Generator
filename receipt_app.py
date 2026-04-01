@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import json
-import base64
 import re
 from fpdf import FPDF
 from streamlit_gsheets import GSheetsConnection
@@ -10,7 +9,7 @@ from datetime import date
 st.set_page_config(page_title="Shree Gurudev Auto", layout="wide")
 
 # ==========================================
-# 1. PDF GENERATOR CLASS (Unchanged & Cleaned)
+# 1. PDF GENERATOR CLASS (Unchanged)
 # ==========================================
 class ReceiptPDF(FPDF):
     def header(self):
@@ -152,56 +151,102 @@ def generate_pdf(data):
     pdf.add_footer_totals(data)
     return bytes(pdf.output())
 
-def show_pdf_preview(pdf_bytes):
-    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="500" type="application/pdf"></iframe>'
-    st.markdown(pdf_display, unsafe_allow_html=True)
-
 
 # ==========================================
-# 2. APP STATE & GOOGLE SHEETS DB
+# 2. APP STATE & DB CONNECTION
 # ==========================================
-# Initialize Session State
 if 'pending_items' not in st.session_state: st.session_state.pending_items = []
-if 'preview_pdf' not in st.session_state: st.session_state.preview_pdf = None
 if 'next_invoice_no' not in st.session_state: st.session_state.next_invoice_no = 1
+if 'view_invoice' not in st.session_state: st.session_state.view_invoice = None
 
-# Database Connection
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_db():
     try:
-        # ttl=0 forces it to fetch live data so increments work
         df = conn.read(ttl=0)
+        # Fix: Convert Invoice_No to Integer, replacing blanks with 0 to prevent "Float" errors
+        if 'Invoice_No' in df.columns:
+            df['Invoice_No'] = pd.to_numeric(df['Invoice_No'], errors='coerce').fillna(0).astype(int)
         return df
     except Exception:
         return pd.DataFrame()
 
 df_db = load_db()
 
-# Calculate auto-incremental invoice number safely
 if not df_db.empty and 'Invoice_No' in df_db.columns:
-    last_invoice = pd.to_numeric(df_db['Invoice_No'], errors='coerce').max()
+    last_invoice = df_db['Invoice_No'].max()
     st.session_state.next_invoice_no = int(last_invoice) + 1 if pd.notna(last_invoice) else 1
 
-# Callbacks to clear forms automatically
+# Auto-reset part callback
 def add_part_callback():
-    desc = st.session_state.part_desc.upper() # UPPERCASE FORCE
-    qty = st.session_state.part_qty
-    rate = st.session_state.part_rate
+    desc = st.session_state.part_desc.upper() if st.session_state.part_desc else ""
+    # If they left it blank (None), default to 1 qty and 0.0 rate
+    qty = st.session_state.part_qty if st.session_state.part_qty is not None else 1
+    rate = st.session_state.part_rate if st.session_state.part_rate is not None else 0.0
+    
     if desc:
         st.session_state.pending_items.append({
             "Description": desc, "Qty": qty, "Rate": rate, "Amount": qty * rate
         })
-        # Reset the input fields automatically
+        # Reset the input fields automatically to empty (None)
         st.session_state.part_desc = ""
-        st.session_state.part_qty = 1
-        st.session_state.part_rate = 0.0
+        st.session_state.part_qty = None
+        st.session_state.part_rate = None
 
 # ==========================================
-# 3. TABS UI LAYOUT
+# 3. HELPER FUNCTIONS FOR UI
 # ==========================================
-tab_dash, tab_create, tab_search = st.tabs(["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search & Update"])
+def show_tabular_preview(data):
+    """Shows the dynamic values in a nice table instead of a PDF paper preview"""
+    st.markdown(f"### 📋 Preview: Invoice #{data.get('Invoice_No')}")
+    st.divider()
+    
+    col1, col2, col3 = st.columns(3)
+    col1.markdown(f"**Customer:** {data.get('Customer_Name')}<br>**Contact:** {data.get('Contact_No')}", unsafe_allow_html=True)
+    col2.markdown(f"**Vehicle No:** {data.get('Vehicle_No')}<br>**Total KMs:** {data.get('Total_KMs')}", unsafe_allow_html=True)
+    col3.markdown(f"**Date:** {data.get('Invoice_Date')}<br>**Mechanic:** {data.get('Mechanic_Names')}", unsafe_allow_html=True)
+    
+    st.write("")
+    items = json.loads(data.get('Items_JSON', '[]'))
+    if items:
+        st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+        
+    st.info(f"**GR Total:** ₹{float(data.get('GR_Total', 0)):.2f} &nbsp;&nbsp;|&nbsp;&nbsp; **Labour Charges:** ₹{float(data.get('Labour_Charges', 0)):.2f} &nbsp;&nbsp;|&nbsp;&nbsp; **Net Total:** ₹{float(data.get('Net_Total', 0)):.2f} &nbsp;&nbsp;|&nbsp;&nbsp; **Received:** ₹{float(data.get('Received_Amt', 0)):.2f}")
+    
+    if st.button("❌ Close Preview"):
+        st.session_state.view_invoice = None
+        st.rerun()
+
+def display_interactive_rows(df, prefix=""):
+    """Creates a table-like view but with actual working buttons on every row"""
+    h1, h2, h3, h4, h5 = st.columns([1, 2, 3, 2, 3])
+    h1.markdown("**Inv No**")
+    h2.markdown("**Date**")
+    h3.markdown("**Customer**")
+    h4.markdown("**Net Total**")
+    h5.markdown("**Actions**")
+    st.divider()
+
+    for idx, row in df.iterrows():
+        c1, c2, c3, c4, c5 = st.columns([1, 2, 3, 2, 3])
+        c1.write(str(row['Invoice_No']))
+        c2.write(str(row['Invoice_Date']))
+        c3.write(str(row['Customer_Name']))
+        c4.write(f"₹{float(row['Net_Total']):.2f}")
+        
+        with c5:
+            # Put buttons side-by-side inside the cell
+            b_col1, b_col2 = st.columns(2)
+            if b_col1.button("👁️ Preview", key=f"p_{prefix}_{row['Invoice_No']}"):
+                st.session_state.view_invoice = row.to_dict()
+                
+            pdf_bytes = generate_pdf(row.to_dict())
+            b_col2.download_button("📥 PDF", data=pdf_bytes, file_name=f"Invoice_{row['Invoice_No']}.pdf", mime="application/pdf", key=f"d_{prefix}_{row['Invoice_No']}")
+
+# ==========================================
+# 4. TABS UI LAYOUT
+# ==========================================
+tab_dash, tab_create, tab_search = st.tabs(["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"])
 
 # ------------------------------------------
 # TAB 1: MAIN DASHBOARD
@@ -209,14 +254,13 @@ tab_dash, tab_create, tab_search = st.tabs(["📊 Main Dashboard", "➕ Create I
 with tab_dash:
     st.subheader("Last 10 Invoices Generated")
     if not df_db.empty:
-        # Sort descending and take top 10
         recent_df = df_db.sort_values(by="Invoice_No", ascending=False).head(10)
-        # Display clean columns
-        display_df = recent_df[['Invoice_No', 'Invoice_Date', 'Customer_Name', 'Vehicle_No', 'Net_Total', 'Received_Amt']]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        display_interactive_rows(recent_df, prefix="dash")
+        
+        if st.session_state.view_invoice and f"dash" in st.session_state:
+            show_tabular_preview(st.session_state.view_invoice)
     else:
         st.info("No invoices found in database.")
-
 
 # ------------------------------------------
 # TAB 2: CREATE NEW INVOICE
@@ -228,12 +272,10 @@ with tab_create:
     st.markdown(f"**Invoice No:** {st.session_state.next_invoice_no}")
     
     col4, col5, col6, col7 = st.columns(4)
-    # Using placeholders so text clears when clicked. Forcing uppercase on output.
     raw_cust = col4.text_input("Customer Name", placeholder="Enter Name")
     cust_name = raw_cust.upper()
     
     raw_contact = col5.text_input("Contact No", placeholder="e.g. 9876543210")
-    # ENFORCE NUMBERS ONLY using regex
     cust_contact = re.sub(r'\D', '', raw_contact) 
     if raw_contact != cust_contact:
         st.warning("Numbers only! Letters have been removed.")
@@ -246,23 +288,32 @@ with tab_create:
     st.divider()
 
     # --- ADD PARTS ---
-    st.subheader("2. Add Parts (Auto-Resets)")
+    st.subheader("2. Add Parts")
     p_col1, p_col2, p_col3, p_col4 = st.columns([3, 1, 1, 1])
     p_col1.text_input("Description", key="part_desc", placeholder="Enter Part Name")
-    p_col2.number_input("Qty", min_value=1, step=1, key="part_qty")
-    p_col3.number_input("Rate (₹)", min_value=0.0, step=1.0, key="part_rate")
+    
+    # FIX: Using value=None so the boxes start totally empty
+    p_col2.number_input("Qty", min_value=1, step=1, value=None, placeholder="1", key="part_qty")
+    p_col3.number_input("Rate (₹)", min_value=0.0, step=1.0, value=None, placeholder="0.0", key="part_rate")
+    
+    # Move the button down slightly to align with input boxes
+    p_col4.write("")
     p_col4.button("➕ Add Part", on_click=add_part_callback, use_container_width=True)
 
     # --- PENDING LIST & TOTALS ---
     if len(st.session_state.pending_items) > 0:
-        st.dataframe(pd.DataFrame(st.session_state.pending_items), use_container_width=True)
+        st.dataframe(pd.DataFrame(st.session_state.pending_items), use_container_width=True, hide_index=True)
         
         fin_col1, fin_col2 = st.columns(2)
-        labour_chrgs = fin_col1.number_input("Labour Charges (₹)", min_value=0.0, step=10.0)
+        # Also using value=None here so they don't have to clear out 0.00 to type
+        labour_chrgs = fin_col1.number_input("Labour Charges (₹)", min_value=0.0, step=10.0, value=None, placeholder="0.0")
         
         gr_total = sum(item['Amount'] for item in st.session_state.pending_items)
-        net_total = gr_total + labour_chrgs
-        received_amt = fin_col2.number_input("Received Amount (₹)", value=float(net_total), step=10.0)
+        # Treat None as 0 for math
+        safe_labour = labour_chrgs if labour_chrgs is not None else 0.0
+        net_total = gr_total + safe_labour
+        
+        received_amt = fin_col2.number_input("Received Amount (₹)", step=10.0, value=float(net_total))
         
         st.write(f"**GR Total:** ₹{gr_total:.2f} | **Net Total:** ₹{net_total:.2f}")
 
@@ -282,9 +333,9 @@ with tab_create:
                     "Items_JSON": json.dumps(st.session_state.pending_items),
                     "Total_Items_Count": len(st.session_state.pending_items),
                     "GR_Total": gr_total,
-                    "Labour_Charges": labour_chrgs,
+                    "Labour_Charges": safe_labour,
                     "Net_Total": net_total,
-                    "Received_Amt": received_amt
+                    "Received_Amt": received_amt if received_amt is not None else net_total
                 }
                 
                 # Update Database
@@ -292,39 +343,38 @@ with tab_create:
                 updated_df = pd.concat([df_db, new_df], ignore_index=True)
                 conn.update(worksheet="Sheet1", data=updated_df)
                 
-                st.success(f"Invoice {st.session_state.next_invoice_no} Saved! DB Incremented.")
+                # Setup the view mode for the new invoice immediately
+                st.session_state.view_invoice = new_row
                 
-                # Generate PDF for Preview
-                pdf_bytes = generate_pdf(new_row)
-                st.session_state.preview_pdf = pdf_bytes
+                st.success(f"Invoice {st.session_state.next_invoice_no} Saved successfully!")
                 
-                # Reset Form for Next Invoice safely
+                # Reset Form
                 st.session_state.next_invoice_no += 1
                 st.session_state.pending_items = []
                 st.rerun()
 
-    # --- PDF PREVIEW ---
-    if st.session_state.preview_pdf:
-        st.divider()
-        st.subheader("Invoice Preview")
-        show_pdf_preview(st.session_state.preview_pdf)
+    # Display Newly Saved Invoice Preview & Download Button at the bottom
+    if st.session_state.view_invoice and "Items_JSON" in st.session_state.view_invoice:
+        show_tabular_preview(st.session_state.view_invoice)
+        pdf_bytes = generate_pdf(st.session_state.view_invoice)
         st.download_button(
-            label="📥 Download This Receipt",
-            data=st.session_state.preview_pdf,
-            file_name="receipt_latest.pdf",
-            mime="application/pdf"
+            label="📥 Download This Receipt (PDF)",
+            data=pdf_bytes,
+            file_name=f"Invoice_{st.session_state.view_invoice['Invoice_No']}.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True
         )
 
-
 # ------------------------------------------
-# TAB 3: SEARCH & UPDATE
+# TAB 3: SEARCH INVOICES (Update Removed)
 # ------------------------------------------
 with tab_search:
-    st.subheader("Search Database")
+    st.subheader("🔍 Search Database")
     search_query = st.text_input("Search by Invoice No, Vehicle No, Name, or Contact").upper()
     
     if search_query and not df_db.empty:
-        # Filter the dataframe across multiple columns using String matching
+        # String matching across columns
         mask = (
             df_db['Invoice_No'].astype(str).str.contains(search_query) |
             df_db['Customer_Name'].astype(str).str.contains(search_query) |
@@ -334,48 +384,9 @@ with tab_search:
         results = df_db[mask]
         
         if not results.empty:
-            st.dataframe(results[['Invoice_No', 'Invoice_Date', 'Customer_Name', 'Vehicle_No', 'Net_Total']], hide_index=True)
+            display_interactive_rows(results, prefix="search")
             
-            # Select an invoice to update
-            selected_inv = st.selectbox("Select Invoice to Update/Print:", results['Invoice_No'].tolist())
-            
-            if selected_inv:
-                # Get the specific row data
-                row_data = results[results['Invoice_No'] == selected_inv].iloc[0].to_dict()
-                
-                st.markdown(f"### Editing Invoice: {selected_inv}")
-                
-                u_col1, u_col2 = st.columns(2)
-                # Form pre-filled with existing data
-                u_name = u_col1.text_input("Update Name", value=row_data['Customer_Name']).upper()
-                u_contact = u_col2.text_input("Update Contact", value=str(row_data['Contact_No']))
-                u_contact = re.sub(r'\D', '', u_contact) # Force numbers
-                u_veh = u_col1.text_input("Update Vehicle No", value=str(row_data['Vehicle_No'])).upper()
-                u_mech = u_col2.text_input("Update Mechanic", value=str(row_data['Mechanic_Names'])).upper()
-                
-                col_btn1, col_btn2 = st.columns(2)
-                
-                if col_btn1.button("💾 Update Record & Generate PDF", key="btn_update"):
-                    # Update row in dataframe
-                    idx = df_db.index[df_db['Invoice_No'] == selected_inv].tolist()[0]
-                    df_db.at[idx, 'Customer_Name'] = u_name
-                    df_db.at[idx, 'Contact_No'] = u_contact
-                    df_db.at[idx, 'Vehicle_No'] = u_veh
-                    df_db.at[idx, 'Mechanic_Names'] = u_mech
-                    
-                    conn.update(worksheet="Sheet1", data=df_db)
-                    st.success("Record Updated Successfully!")
-                    
-                    # Generate fresh PDF with updated data
-                    updated_row_data = df_db.iloc[idx].to_dict()
-                    up_pdf_bytes = generate_pdf(updated_row_data)
-                    
-                    st.download_button(
-                        label="📥 Download Updated Receipt",
-                        data=up_pdf_bytes,
-                        file_name=f"receipt_{selected_inv}_updated.pdf",
-                        mime="application/pdf",
-                        type="primary"
-                    )
+            if st.session_state.view_invoice:
+                show_tabular_preview(st.session_state.view_invoice)
         else:
             st.warning("No records found matching your search.")
