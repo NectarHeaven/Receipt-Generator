@@ -9,7 +9,7 @@ from datetime import date
 st.set_page_config(page_title="Shree Gurudev Auto", layout="wide")
 
 # ==========================================
-# 1. PDF GENERATOR CLASS (Unchanged)
+# 1. PDF GENERATOR CLASS
 # ==========================================
 class ReceiptPDF(FPDF):
     def header(self):
@@ -138,13 +138,20 @@ def generate_pdf(data):
     pdf.set_font("helvetica", "", 9)
     y_pos = 64
     items_list = json.loads(data['Items_JSON'])
+    
     for index, item in enumerate(items_list):
+        # FIX: Using .get() completely prevents KeyError from old database entries
+        desc = item.get('Description', item.get('DESCRIPTION', ''))
+        qty = item.get('Qty', item.get('QTY', 0))
+        rate = item.get('Rate', item.get('RATE', 0.0))
+        amount = item.get('Amount', item.get('AMOUNT', 0.0))
+        
         pdf.set_xy(10, y_pos)
         pdf.cell(10, 5, str(index + 1), align="C") 
-        pdf.cell(100, 5, str(item['Description']), align="L")
-        pdf.cell(20, 5, str(item['Qty']), align="C")
-        pdf.cell(25, 5, f"{float(item['Rate']):.2f}", align="C")
-        pdf.cell(35, 5, f"{float(item['Amount']):.2f}", align="R")
+        pdf.cell(100, 5, str(desc), align="L")
+        pdf.cell(20, 5, str(qty), align="C")
+        pdf.cell(25, 5, f"{float(rate):.2f}", align="C")
+        pdf.cell(35, 5, f"{float(amount):.2f}", align="R")
         y_pos += 6
         
     pdf.draw_grid_lines()
@@ -164,7 +171,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_db():
     try:
         df = conn.read(ttl=0)
-        # Fix: Convert Invoice_No to Integer, replacing blanks with 0 to prevent "Float" errors
         if 'Invoice_No' in df.columns:
             df['Invoice_No'] = pd.to_numeric(df['Invoice_No'], errors='coerce').fillna(0).astype(int)
         return df
@@ -177,10 +183,8 @@ if not df_db.empty and 'Invoice_No' in df_db.columns:
     last_invoice = df_db['Invoice_No'].max()
     st.session_state.next_invoice_no = int(last_invoice) + 1 if pd.notna(last_invoice) else 1
 
-# Auto-reset part callback
 def add_part_callback():
     desc = st.session_state.part_desc.upper() if st.session_state.part_desc else ""
-    # If they left it blank (None), default to 1 qty and 0.0 rate
     qty = st.session_state.part_qty if st.session_state.part_qty is not None else 1
     rate = st.session_state.part_rate if st.session_state.part_rate is not None else 0.0
     
@@ -188,7 +192,6 @@ def add_part_callback():
         st.session_state.pending_items.append({
             "Description": desc, "Qty": qty, "Rate": rate, "Amount": qty * rate
         })
-        # Reset the input fields automatically to empty (None)
         st.session_state.part_desc = ""
         st.session_state.part_qty = None
         st.session_state.part_rate = None
@@ -197,7 +200,6 @@ def add_part_callback():
 # 3. HELPER FUNCTIONS FOR UI
 # ==========================================
 def show_tabular_preview(data):
-    """Shows the dynamic values in a nice table instead of a PDF paper preview"""
     st.markdown(f"### 📋 Preview: Invoice #{data.get('Invoice_No')}")
     st.divider()
     
@@ -218,7 +220,6 @@ def show_tabular_preview(data):
         st.rerun()
 
 def display_interactive_rows(df, prefix=""):
-    """Creates a table-like view but with actual working buttons on every row"""
     h1, h2, h3, h4, h5 = st.columns([1, 2, 3, 2, 3])
     h1.markdown("**Inv No**")
     h2.markdown("**Date**")
@@ -235,7 +236,6 @@ def display_interactive_rows(df, prefix=""):
         c4.write(f"₹{float(row['Net_Total']):.2f}")
         
         with c5:
-            # Put buttons side-by-side inside the cell
             b_col1, b_col2 = st.columns(2)
             if b_col1.button("👁️ Preview", key=f"p_{prefix}_{row['Invoice_No']}"):
                 st.session_state.view_invoice = row.to_dict()
@@ -275,10 +275,14 @@ with tab_create:
     raw_cust = col4.text_input("Customer Name", placeholder="Enter Name")
     cust_name = raw_cust.upper()
     
-    raw_contact = col5.text_input("Contact No", placeholder="e.g. 9876543210")
+    # FIX: max_chars=10 strictly enforces the 10 digit limit physically
+    raw_contact = col5.text_input("Contact No", placeholder="e.g. 9876543210", max_chars=10)
     cust_contact = re.sub(r'\D', '', raw_contact) 
-    if raw_contact != cust_contact:
+    
+    if raw_contact and raw_contact != cust_contact:
         st.warning("Numbers only! Letters have been removed.")
+    elif cust_contact and len(cust_contact) < 10:
+        st.warning("⚠️ Contact number must be exactly 10 digits.")
 
     veh_no = col6.text_input("Vehicle No", placeholder="e.g. MH05CR8172").upper()
     tot_kms = col7.text_input("Total KMs", placeholder="e.g. 8500").upper()
@@ -292,11 +296,9 @@ with tab_create:
     p_col1, p_col2, p_col3, p_col4 = st.columns([3, 1, 1, 1])
     p_col1.text_input("Description", key="part_desc", placeholder="Enter Part Name")
     
-    # FIX: Using value=None so the boxes start totally empty
     p_col2.number_input("Qty", min_value=1, step=1, value=None, placeholder="1", key="part_qty")
     p_col3.number_input("Rate (₹)", min_value=0.0, step=1.0, value=None, placeholder="0.0", key="part_rate")
     
-    # Move the button down slightly to align with input boxes
     p_col4.write("")
     p_col4.button("➕ Add Part", on_click=add_part_callback, use_container_width=True)
 
@@ -305,11 +307,9 @@ with tab_create:
         st.dataframe(pd.DataFrame(st.session_state.pending_items), use_container_width=True, hide_index=True)
         
         fin_col1, fin_col2 = st.columns(2)
-        # Also using value=None here so they don't have to clear out 0.00 to type
         labour_chrgs = fin_col1.number_input("Labour Charges (₹)", min_value=0.0, step=10.0, value=None, placeholder="0.0")
         
         gr_total = sum(item['Amount'] for item in st.session_state.pending_items)
-        # Treat None as 0 for math
         safe_labour = labour_chrgs if labour_chrgs is not None else 0.0
         net_total = gr_total + safe_labour
         
@@ -321,6 +321,8 @@ with tab_create:
         if st.button("💾 Save & Generate Invoice", type="primary", use_container_width=True):
             if not cust_name:
                 st.error("Customer Name is required.")
+            elif cust_contact and len(cust_contact) < 10:
+                st.error("Please enter a valid 10-digit contact number before saving.")
             else:
                 new_row = {
                     "Invoice_No": st.session_state.next_invoice_no,
@@ -338,22 +340,17 @@ with tab_create:
                     "Received_Amt": received_amt if received_amt is not None else net_total
                 }
                 
-                # Update Database
                 new_df = pd.DataFrame([new_row])
                 updated_df = pd.concat([df_db, new_df], ignore_index=True)
                 conn.update(worksheet="Sheet1", data=updated_df)
                 
-                # Setup the view mode for the new invoice immediately
                 st.session_state.view_invoice = new_row
-                
                 st.success(f"Invoice {st.session_state.next_invoice_no} Saved successfully!")
                 
-                # Reset Form
                 st.session_state.next_invoice_no += 1
                 st.session_state.pending_items = []
                 st.rerun()
 
-    # Display Newly Saved Invoice Preview & Download Button at the bottom
     if st.session_state.view_invoice and "Items_JSON" in st.session_state.view_invoice:
         show_tabular_preview(st.session_state.view_invoice)
         pdf_bytes = generate_pdf(st.session_state.view_invoice)
@@ -367,14 +364,13 @@ with tab_create:
         )
 
 # ------------------------------------------
-# TAB 3: SEARCH INVOICES (Update Removed)
+# TAB 3: SEARCH INVOICES
 # ------------------------------------------
 with tab_search:
     st.subheader("🔍 Search Database")
     search_query = st.text_input("Search by Invoice No, Vehicle No, Name, or Contact").upper()
     
     if search_query and not df_db.empty:
-        # String matching across columns
         mask = (
             df_db['Invoice_No'].astype(str).str.contains(search_query) |
             df_db['Customer_Name'].astype(str).str.contains(search_query) |
