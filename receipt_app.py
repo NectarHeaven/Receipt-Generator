@@ -143,25 +143,48 @@ def generate_pdf(data):
     pdf.set_font("helvetica", "", 9)
     items_list = json.loads(data.get('Items_JSON', '[]'))
     
+  row_height = 6
     for index, item in enumerate(items_list):
-        # 🚨 PAGINATION LOGIC: If we hit 230mm down the page, flip to next page
-        if y_pos > 230:
-            pdf.draw_grid_lines()
-            y_pos = create_new_page()
-            pdf.set_font("helvetica", "", 9)
-
-        desc = item.get('Description', item.get('DESCRIPTION', ''))
-        qty = item.get('Qty', item.get('QTY', 0))
-        rate = item.get('Rate', item.get('RATE', 0.0))
-        amount = item.get('Amount', item.get('AMOUNT', 0.0))
+        desc = str(item.get('Description', item.get('DESCRIPTION', '')))
+        qty = str(item.get('Qty', item.get('QTY', '')))
+        rate = float(item.get('Rate', item.get('RATE', 0)))
+        amount = float(item.get('Amount', item.get('AMOUNT', 0)))
         
-        pdf.set_xy(10, y_pos)
-        pdf.cell(10, 5, str(index + 1), align="C") 
-        pdf.cell(100, 5, str(desc), align="L")
-        pdf.cell(20, 5, str(qty), align="C")
-        pdf.cell(25, 5, f"{float(rate):.2f}", align="C")
-        pdf.cell(35, 5, f"{float(amount):.2f}", align="R")
-        y_pos += 6
+        start_y = pdf.get_y()
+        
+        # Pagination Check
+        if start_y > 230:
+            pdf.draw_grid_lines()
+            y_pos = create_new_page() 
+            pdf.set_font("helvetica", "", 9)
+            start_y = pdf.get_y()
+
+        # 1. SNo
+        pdf.set_xy(10, start_y)
+        pdf.cell(10, row_height, str(index + 1), border=0, align="C")
+        
+        # 2. Product Name (This handles the long text wrapping)
+        pdf.set_xy(20, start_y)
+        pdf.multi_cell(100, row_height, desc, border=0, align="L")
+        
+        # Calculate new height after wrapping
+        end_y = pdf.get_y()
+        calc_row_height = end_y - start_y
+        
+        # 3. QTY
+        pdf.set_xy(120, start_y)
+        pdf.cell(20, calc_row_height, qty, border=0, align="C")
+        
+        # 4. RATE
+        pdf.set_xy(140, start_y)
+        pdf.cell(25, calc_row_height, f"{rate:.2f}", border=0, align="C")
+        
+        # 5. AMOUNT
+        pdf.set_xy(165, start_y)
+        pdf.cell(35, calc_row_height, f"{amount:.2f}", border=0, align="R")
+        
+        pdf.set_y(end_y)
+        y_pos = end_y
         
     pdf.draw_grid_lines()
     pdf.add_footer_totals(data)
