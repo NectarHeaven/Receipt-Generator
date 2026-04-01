@@ -143,7 +143,7 @@ def generate_pdf(data):
     pdf.set_font("helvetica", "", 9)
     items_list = json.loads(data.get('Items_JSON', '[]'))
     
-  row_height = 6
+    row_height = 6
     for index, item in enumerate(items_list):
         desc = str(item.get('Description', item.get('DESCRIPTION', '')))
         qty = str(item.get('Qty', item.get('QTY', '')))
