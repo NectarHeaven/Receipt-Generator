@@ -93,10 +93,7 @@ class ReceiptPDF(FPDF):
         self.line(10, 62, 200, 62)
 
     def draw_grid_lines(self, is_last_page=True):
-        # If it's the last page, leave room for totals (stop at 240). 
-        # If middle page, draw lines to bottom of box (264).
         col1_3_y = 240 if is_last_page else 264
-        
         self.line(20, 54, 20, col1_3_y)   
         self.line(120, 54, 120, 264) 
         self.line(140, 54, 140, col1_3_y) 
@@ -160,41 +157,34 @@ def generate_pdf(data):
         
         start_y = pdf.get_y()
         
-        # Pagination Check
         if start_y > 230:
-            pdf.draw_grid_lines(is_last_page=False) # Draw full lines for middle page
+            pdf.draw_grid_lines(is_last_page=False) 
             y_pos = create_new_page() 
             pdf.set_font("helvetica", "", 9)
             start_y = pdf.get_y()
 
-        # 1. SNo
         pdf.set_xy(10, start_y)
         pdf.cell(10, row_height, str(index + 1), border=0, align="C")
         
-        # 2. Product Name
         pdf.set_xy(20, start_y)
         pdf.multi_cell(100, row_height, desc, border=0, align="L")
         
-        # Calculate new height after wrapping
         end_y = pdf.get_y()
         calc_row_height = end_y - start_y
         
-        # 3. QTY
         pdf.set_xy(120, start_y)
         pdf.cell(20, calc_row_height, qty, border=0, align="C")
         
-        # 4. RATE
         pdf.set_xy(140, start_y)
         pdf.cell(25, calc_row_height, f"{rate:.2f}", border=0, align="C")
         
-        # 5. AMOUNT
         pdf.set_xy(165, start_y)
         pdf.cell(35, calc_row_height, f"{amount:.2f}", border=0, align="R")
         
         pdf.set_y(end_y)
         y_pos = end_y
         
-    pdf.draw_grid_lines(is_last_page=True) # Draw final lines leaving room for totals
+    pdf.draw_grid_lines(is_last_page=True) 
     pdf.add_footer_totals(data)
     return bytes(pdf.output())
 
@@ -208,6 +198,7 @@ if 'view_invoice' not in st.session_state: st.session_state.view_invoice = None
 
 if 'part_qty' not in st.session_state: st.session_state.part_qty = None
 if 'part_rate' not in st.session_state: st.session_state.part_rate = None
+if 'part_select' not in st.session_state: st.session_state.part_select = "--- TYPE NEW PART ---"
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -226,10 +217,39 @@ if not df_db.empty and 'Invoice_No' in df_db.columns:
     last_invoice = df_db['Invoice_No'].max()
     st.session_state.next_invoice_no = int(last_invoice) + 1 if pd.notna(last_invoice) else 1
 
+# ==========================================
+# DYNAMIC PARTS LIST LOGIC
+# ==========================================
+def get_dynamic_parts_list(df_invoices):
+    parts_set = set()
+    
+    # 1. Check for 'Master_Parts' column in the same Sheet1
+    if not df_invoices.empty and 'Master_Parts' in df_invoices.columns:
+        for p in df_invoices['Master_Parts'].dropna():
+            if str(p).strip():
+                parts_set.add(str(p).strip().upper())
+
+    # 2. Learn automatically from all past invoices
+    if not df_invoices.empty and 'Items_JSON' in df_invoices.columns:
+        for json_str in df_invoices['Items_JSON'].dropna():
+            try:
+                items = json.loads(json_str)
+                for item in items:
+                    desc = item.get('Description', item.get('DESCRIPTION', ''))
+                    if desc:
+                        parts_set.add(str(desc).strip().upper())
+            except Exception:
+                pass
+                
+    sorted_parts = sorted(list(parts_set))
+    return ["--- TYPE NEW PART ---"] + sorted_parts
+
+AVAILABLE_PARTS = get_dynamic_parts_list(df_db)
+
 # --- NEW DELETE FUNCTION ---
 def delete_invoice(inv_no):
     try:
-        df = conn.read(ttl=0) # Read freshest data
+        df = conn.read(ttl=0) 
         updated_df = df[df['Invoice_No'] != inv_no]
         conn.update(worksheet="Sheet1", data=updated_df)
         st.session_state.view_invoice = None
@@ -238,8 +258,13 @@ def delete_invoice(inv_no):
     except Exception as e:
         st.error(f"Error deleting invoice: {e}")
 
+# --- UPDATED ADD PART CALLBACK ---
 def add_part_callback():
-    desc = st.session_state.part_desc.upper() if st.session_state.part_desc else ""
+    if st.session_state.part_select == "--- TYPE NEW PART ---":
+        desc = st.session_state.get("part_desc_custom", "").upper()
+    else:
+        desc = st.session_state.part_select.upper()
+        
     qty = st.session_state.part_qty if st.session_state.part_qty is not None else 1
     rate = st.session_state.part_rate if st.session_state.part_rate is not None else 0.0
     
@@ -247,7 +272,11 @@ def add_part_callback():
         st.session_state.pending_items.append({
             "Description": desc, "Qty": qty, "Rate": rate, "Amount": qty * rate
         })
-        st.session_state.part_desc = ""
+        
+        # Reset everything
+        st.session_state.part_select = "--- TYPE NEW PART ---"
+        if "part_desc_custom" in st.session_state:
+            st.session_state.part_desc_custom = ""
         st.session_state.part_qty = None
         st.session_state.part_rate = None
 
@@ -271,7 +300,6 @@ def display_interactive_rows(df, prefix=""):
         c4.write(f"₹{float(row['Net_Total']):.2f}")
         
         with c5:
-            # Added a 3rd button column for Deletion
             b_col1, b_col2, b_col3 = st.columns([4, 4, 2])
             
             if b_col1.button("👁️ View", key=f"p_{prefix}_{idx}_{row['Invoice_No']}"):
@@ -281,7 +309,6 @@ def display_interactive_rows(df, prefix=""):
             pdf_bytes = generate_pdf(row.to_dict())
             b_col2.download_button("📥 PDF", data=pdf_bytes, file_name=f"Invoice_{row['Invoice_No']}.pdf", mime="application/pdf", key=f"d_{prefix}_{idx}_{row['Invoice_No']}")
             
-            # The Delete Button
             if b_col3.button("🗑️", key=f"del_{prefix}_{idx}_{row['Invoice_No']}"):
                 delete_invoice(row['Invoice_No'])
 
@@ -361,13 +388,26 @@ else:
         # --- ADD PARTS ---
         st.subheader("2. Add Parts")
         p_col1, p_col2, p_col3, p_col4 = st.columns([3, 1, 1, 1])
-        p_col1.text_input("Description", key="part_desc", placeholder="Enter Part Name")
         
-        p_col2.number_input("Qty", min_value=1, step=1, key="part_qty", placeholder="1")
-        p_col3.number_input("Rate (₹)", min_value=0.0, step=1.0, key="part_rate", placeholder="0.0")
+        with p_col1:
+            st.markdown("**Description**")
+            st.selectbox("Select Part", AVAILABLE_PARTS, key="part_select", label_visibility="collapsed")
+            
+            if st.session_state.get("part_select", "--- TYPE NEW PART ---") == "--- TYPE NEW PART ---":
+                st.text_input("Custom Part", key="part_desc_custom", placeholder="Type new part...", label_visibility="collapsed")
         
-        p_col4.write("")
-        p_col4.button("➕ Add Part", on_click=add_part_callback, use_container_width=True)
+        with p_col2:
+            st.markdown("**Qty**")
+            st.number_input("Qty", min_value=1, step=1, key="part_qty", placeholder="1", label_visibility="collapsed")
+        
+        with p_col3:
+            st.markdown("**Rate (₹)**")
+            st.number_input("Rate", min_value=0.0, step=1.0, key="part_rate", placeholder="0.0", label_visibility="collapsed")
+        
+        with p_col4:
+            st.write("")
+            st.write("")
+            st.button("➕ Add Part", on_click=add_part_callback, use_container_width=True)
 
         # --- PENDING LIST & TOTALS ---
         if len(st.session_state.pending_items) > 0:
