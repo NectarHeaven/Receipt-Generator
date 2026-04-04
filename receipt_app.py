@@ -9,11 +9,25 @@ from datetime import date
 st.set_page_config(page_title="Shree Gurudev Auto", layout="wide")
 
 # ==========================================
+# 0. BULLETPROOF JSON PARSER
+# ==========================================
+def parse_items_json(raw_data):
+    """Safely extracts a list of items whether the data is a string, an actual list, or blank/corrupted."""
+    if isinstance(raw_data, str):
+        try:
+            parsed = json.loads(raw_data)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    elif isinstance(raw_data, list):
+        return raw_data
+    return []
+
+# ==========================================
 # 1. PDF GENERATOR CLASS WITH PAGINATION
 # ==========================================
 class ReceiptPDF(FPDF):
     def header(self):
-        # This draws the outer bounding box on EVERY page
         self.rect(10, 10, 190, 254)
         
         self.set_xy(10, 12)
@@ -35,7 +49,6 @@ class ReceiptPDF(FPDF):
         self.multi_cell(90, 4, address, border=0, align="R")
 
     def footer(self):
-        # This automatically triggers at the bottom of EVERY page
         self.set_xy(10, 266)
         self.set_font("helvetica", "", 9)
         self.cell(0, 5, f"PAGE NO. : {self.page_no()}", align="L")
@@ -146,10 +159,15 @@ def generate_pdf(data):
 
     y_pos = create_new_page()
     pdf.set_font("helvetica", "", 9)
-    items_list = json.loads(data.get('Items_JSON', '[]'))
+    
+    # SAFELY LOAD JSON HERE
+    items_list = parse_items_json(data.get('Items_JSON', '[]'))
     
     row_height = 6
     for index, item in enumerate(items_list):
+        if not isinstance(item, dict):
+            continue
+            
         desc = str(item.get('Description', item.get('DESCRIPTION', '')))
         qty = str(item.get('Qty', item.get('QTY', '')))
         rate = float(item.get('Rate', item.get('RATE', 0)))
@@ -229,17 +247,15 @@ def get_dynamic_parts_list(df_invoices):
             if str(p).strip():
                 parts_set.add(str(p).strip().upper())
 
-    # 2. Learn automatically from all past invoices
+    # 2. Learn automatically from all past invoices safely
     if not df_invoices.empty and 'Items_JSON' in df_invoices.columns:
-        for json_str in df_invoices['Items_JSON'].dropna():
-            try:
-                items = json.loads(json_str)
-                for item in items:
+        for raw_val in df_invoices['Items_JSON'].dropna():
+            items = parse_items_json(raw_val)
+            for item in items:
+                if isinstance(item, dict):
                     desc = item.get('Description', item.get('DESCRIPTION', ''))
                     if desc:
                         parts_set.add(str(desc).strip().upper())
-            except Exception:
-                pass
                 
     sorted_parts = sorted(list(parts_set))
     return ["--- TYPE NEW PART ---"] + sorted_parts
@@ -328,7 +344,10 @@ if st.session_state.view_invoice:
     col3.markdown(f"**Date:** {data.get('Invoice_Date')}<br>**Mechanic:** {data.get('Mechanic_Names')}", unsafe_allow_html=True)
     
     st.write("")
-    items = json.loads(data.get('Items_JSON', '[]'))
+    
+    # SAFELY LOAD JSON FOR UI PREVIEW
+    items = parse_items_json(data.get('Items_JSON', '[]'))
+    
     if items:
         st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
         
