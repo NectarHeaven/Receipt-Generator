@@ -22,8 +22,26 @@ def parse_items_json(raw_data):
         return raw_data
     return []
 
+# Columns that must always be stored as plain strings in the sheet.
+# This prevents pandas/gsheets from casting phone numbers to float64.
+STR_COLS = ['Customer_Name', 'Contact_No', 'Vehicle_No', 'Total_KMs',
+            'Mechanic_Names', 'Invoice_Date', 'Items_JSON']
+
+def sanitise_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Force text columns to str and strip trailing '.0' from phone numbers."""
+    for col in STR_COLS:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .fillna('')
+                .astype(str)
+                .str.replace(r'\.0$', '', regex=True)   # "9876543210.0" → "9876543210"
+                .str.strip()
+            )
+    return df
+
 # ==========================================
-# 1. PDF GENERATOR
+# 1. PDF GENERATOR  (Received_Amt removed)
 # ==========================================
 class ReceiptPDF(FPDF):
     def header(self):
@@ -53,34 +71,30 @@ class ReceiptPDF(FPDF):
         self.line(10, 32, 200, 32)
         self.set_font("helvetica", "B", 9)
         self.set_xy(10, 34)
-        self.cell(25, 5, "NAME")
-        self.set_font("helvetica", "", 9)
+        self.cell(25, 5, "NAME");         self.set_font("helvetica", "", 9)
         self.cell(80, 5, str(data.get('Customer_Name', '')))
         self.set_font("helvetica", "B", 9)
-        self.cell(30, 5, "BILL NO.")
-        self.set_font("helvetica", "", 9)
+        self.cell(30, 5, "BILL NO.");     self.set_font("helvetica", "", 9)
         self.cell(45, 5, str(data.get('Invoice_No', '')), align="R")
         self.ln(5)
         self.set_x(10)
         self.set_font("helvetica", "B", 9)
-        self.cell(25, 5, "CONTACT NO.")
-        self.set_font("helvetica", "", 9)
-        self.cell(80, 5, str(data.get('Contact_No', '')))
+        self.cell(25, 5, "CONTACT NO."); self.set_font("helvetica", "", 9)
+        # strip trailing .0 that Google Sheets sometimes adds
+        contact = re.sub(r'\.0$', '', str(data.get('Contact_No', '')))
+        self.cell(80, 5, contact)
         self.set_font("helvetica", "B", 9)
-        self.cell(30, 5, "DATE")
-        self.set_font("helvetica", "", 9)
+        self.cell(30, 5, "DATE");         self.set_font("helvetica", "", 9)
         self.cell(45, 5, str(data.get('Invoice_Date', '')), align="R")
         self.ln(5)
         self.set_x(10)
         self.set_font("helvetica", "B", 9)
-        self.cell(25, 5, "VEHICLE NO.")
-        self.set_font("helvetica", "", 9)
+        self.cell(25, 5, "VEHICLE NO."); self.set_font("helvetica", "", 9)
         self.cell(80, 5, str(data.get('Vehicle_No', '')))
         self.ln(5)
         self.set_x(10)
         self.set_font("helvetica", "B", 9)
-        self.cell(25, 5, "TOTAL KMS")
-        self.set_font("helvetica", "", 9)
+        self.cell(25, 5, "TOTAL KMS");   self.set_font("helvetica", "", 9)
         self.cell(80, 5, str(data.get('Total_KMs', '')))
         self.ln(6)
         self.line(10, 54, 200, 54)
@@ -88,17 +102,17 @@ class ReceiptPDF(FPDF):
     def add_table_headers(self):
         self.set_xy(10, 54)
         self.set_font("helvetica", "B", 9)
-        self.cell(10, 8, "SNo.", align="C")
+        self.cell(10,  8, "SNo.",                   align="C")
         self.cell(100, 8, "PRODUCT / SERVICE NAME", align="L")
-        self.cell(20, 8, "QTY", align="C")
-        self.cell(25, 8, "RATE", align="C")
-        self.cell(35, 8, "AMOUNT", align="R")
+        self.cell(20,  8, "QTY",                    align="C")
+        self.cell(25,  8, "RATE",                   align="C")
+        self.cell(35,  8, "AMOUNT",                 align="R")
         self.ln(8)
         self.line(10, 62, 200, 62)
 
     def draw_grid_lines(self, is_last_page=True):
         col1_3_y = 240 if is_last_page else 264
-        self.line(20, 54, 20, col1_3_y)
+        self.line(20,  54, 20,  col1_3_y)
         self.line(120, 54, 120, 264)
         self.line(140, 54, 140, col1_3_y)
         self.line(165, 54, 165, 264)
@@ -114,63 +128,65 @@ class ReceiptPDF(FPDF):
         self.set_xy(10, 255)
         self.set_font("helvetica", "I", 12)
         self.cell(110, 6, "*** THANK YOU ***", align="C")
+
         self.set_font("helvetica", "", 9)
         self.set_xy(120, 240)
-        self.cell(45, 6, "GR. TOTAL", align="R")
+        self.cell(45, 6, "GR. TOTAL",    align="R")
         self.cell(35, 6, f"{float(totals_dict.get('GR_Total', 0)):.2f}", align="R")
         self.line(120, 246, 200, 246)
+
         self.set_xy(120, 246)
         self.cell(45, 6, "LABOUR CHRGS", align="R")
         self.cell(35, 6, f"{float(totals_dict.get('Labour_Charges', 0)):.2f}", align="R")
         self.line(120, 252, 200, 252)
+
         self.set_xy(120, 252)
         self.set_font("helvetica", "B", 9)
-        self.cell(45, 6, "NET TOTAL", align="R")
+        self.cell(45, 6, "NET TOTAL",    align="R")
         self.cell(35, 6, f"{float(totals_dict.get('Net_Total', 0)):.2f}", align="R")
         self.line(120, 258, 200, 258)
-        self.set_xy(120, 258)
-        self.set_font("helvetica", "", 9)
-        self.cell(45, 6, "Received Amt", align="R")
-        self.cell(35, 6, f"{float(totals_dict.get('Received_Amt', 0)):.2f}", align="R")
+        # ── Received_Amt row REMOVED ──
 
 def generate_pdf(data):
     pdf = ReceiptPDF(orientation="P", unit="mm", format="A4")
+
     def create_new_page():
         pdf.add_page()
         pdf.add_customer_details(data)
         pdf.add_table_headers()
         return 64
-    y_pos = create_new_page()
+
+    create_new_page()
     pdf.set_font("helvetica", "", 9)
     items_list = parse_items_json(data.get('Items_JSON', '[]'))
-    row_height = 6
+
     for index, item in enumerate(items_list):
         if not isinstance(item, dict):
             continue
         desc   = str(item.get('Description', item.get('DESCRIPTION', '')))
-        qty    = str(item.get('Qty',  item.get('QTY',  '')))
+        qty    = str(item.get('Qty',    item.get('QTY',    '')))
         rate   = float(item.get('Rate',   item.get('RATE',   0)))
         amount = float(item.get('Amount', item.get('AMOUNT', 0)))
+
         start_y = pdf.get_y()
         if start_y > 230:
             pdf.draw_grid_lines(is_last_page=False)
-            y_pos = create_new_page()
+            create_new_page()
             pdf.set_font("helvetica", "", 9)
             start_y = pdf.get_y()
+
         pdf.set_xy(10, start_y)
-        pdf.cell(10, row_height, str(index + 1), border=0, align="C")
+        pdf.cell(10, 6, str(index + 1), border=0, align="C")
         pdf.set_xy(20, start_y)
-        pdf.multi_cell(100, row_height, desc, border=0, align="L")
+        pdf.multi_cell(100, 6, desc, border=0, align="L")
         end_y = pdf.get_y()
-        calc_row_height = end_y - start_y
-        pdf.set_xy(120, start_y)
-        pdf.cell(20, calc_row_height, qty,            border=0, align="C")
-        pdf.set_xy(140, start_y)
-        pdf.cell(25, calc_row_height, f"{rate:.2f}",  border=0, align="C")
-        pdf.set_xy(165, start_y)
-        pdf.cell(35, calc_row_height, f"{amount:.2f}",border=0, align="R")
+        h = end_y - start_y
+
+        pdf.set_xy(120, start_y); pdf.cell(20, h, qty,             border=0, align="C")
+        pdf.set_xy(140, start_y); pdf.cell(25, h, f"{rate:.2f}",   border=0, align="C")
+        pdf.set_xy(165, start_y); pdf.cell(35, h, f"{amount:.2f}", border=0, align="R")
         pdf.set_y(end_y)
-        y_pos = end_y
+
     pdf.draw_grid_lines(is_last_page=True)
     pdf.add_footer_totals(data)
     return bytes(pdf.output())
@@ -179,15 +195,14 @@ def generate_pdf(data):
 # 2. SESSION STATE
 # ==========================================
 defaults = {
-    'pending_items': [],
-    'next_invoice_no': 1,
-    'view_invoice': None,
-    'part_qty': None,
-    'part_rate': None,
-    'part_select': "--- TYPE NEW PART ---",
-    # edit-mode flags for the preview panel
-    'edit_preview_items': None,   # list of dicts while editing
-    'edit_preview_meta': None,    # dict of header fields while editing
+    'pending_items':      [],
+    'next_invoice_no':    1,
+    'view_invoice':       None,
+    'part_qty':           None,
+    'part_rate':          None,
+    'part_select':        "--- TYPE NEW PART ---",
+    'edit_preview_items': None,
+    'edit_preview_meta':  None,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -201,10 +216,16 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_db():
     try:
         df = conn.read(ttl=0)
+        if df.empty:
+            return df
+        df = sanitise_df(df)
         if 'Invoice_No' in df.columns:
             df['Invoice_No'] = pd.to_numeric(df['Invoice_No'], errors='coerce').fillna(0).astype(int)
         if 'Invoice_Date' in df.columns:
             df['Invoice_Date'] = pd.to_datetime(df['Invoice_Date'], errors='coerce')
+        for num_col in ['GR_Total', 'Labour_Charges', 'Net_Total', 'Total_Items_Count']:
+            if num_col in df.columns:
+                df[num_col] = pd.to_numeric(df[num_col], errors='coerce').fillna(0)
         return df
     except Exception:
         return pd.DataFrame()
@@ -212,8 +233,8 @@ def load_db():
 df_db = load_db()
 
 if not df_db.empty and 'Invoice_No' in df_db.columns:
-    last_invoice = df_db['Invoice_No'].max()
-    st.session_state.next_invoice_no = int(last_invoice) + 1 if pd.notna(last_invoice) else 1
+    last = df_db['Invoice_No'].max()
+    st.session_state.next_invoice_no = int(last) + 1 if pd.notna(last) else 1
 
 # ==========================================
 # 4. DYNAMIC PARTS LIST
@@ -231,7 +252,7 @@ def get_dynamic_parts_list(df_invoices):
                     desc = item.get('Description', item.get('DESCRIPTION', ''))
                     if desc:
                         parts_set.add(str(desc).strip().upper())
-    return ["--- TYPE NEW PART ---"] + sorted(list(parts_set))
+    return ["--- TYPE NEW PART ---"] + sorted(parts_set)
 
 AVAILABLE_PARTS = get_dynamic_parts_list(df_db)
 
@@ -241,33 +262,55 @@ AVAILABLE_PARTS = get_dynamic_parts_list(df_db)
 def delete_invoice(inv_no):
     try:
         df = conn.read(ttl=0)
-        updated_df = df[df['Invoice_No'] != inv_no]
-        conn.update(worksheet="Sheet1", data=updated_df)
+        df = sanitise_df(df)
+        df['Invoice_No'] = pd.to_numeric(df['Invoice_No'], errors='coerce').fillna(0).astype(int)
+        updated = df[df['Invoice_No'] != inv_no]
+        conn.update(worksheet="Sheet1", data=updated)
         st.session_state.view_invoice = None
         st.success(f"Invoice #{inv_no} deleted.")
         st.rerun()
     except Exception as e:
         st.error(f"Error deleting: {e}")
 
-def save_updated_invoice(original_inv_no, updated_data):
-    """Overwrite one row in the sheet with updated_data dict."""
+def build_row_dict(inv_no, inv_date, cust, contact, veh, kms, mech,
+                   items, gr_total, labour, net_total):
+    """Single place to build a row — no Received_Amt."""
+    return {
+        "Invoice_No":        int(inv_no),
+        "Invoice_Date":      str(inv_date),
+        "Customer_Name":     str(cust),
+        "Contact_No":        str(contact),          # always str → no float cast
+        "Vehicle_No":        str(veh),
+        "Total_KMs":         str(kms),
+        "Mechanic_Names":    str(mech),
+        "Items_JSON":        json.dumps(items),
+        "Total_Items_Count": int(len(items)),
+        "GR_Total":          round(float(gr_total),  2),
+        "Labour_Charges":    round(float(labour),    2),
+        "Net_Total":         round(float(net_total), 2),
+    }
+
+def save_updated_invoice(original_inv_no, updated_row: dict):
     try:
         df = conn.read(ttl=0)
+        df = sanitise_df(df)
         df['Invoice_No'] = pd.to_numeric(df['Invoice_No'], errors='coerce').fillna(0).astype(int)
+
         idx_list = df.index[df['Invoice_No'] == original_inv_no].tolist()
         if not idx_list:
             st.error("Could not find invoice to update.")
             return
-        for col, val in updated_data.items():
-            if col in df.columns:
-                df.at[idx_list[0], col] = val
-            else:
+
+        for col, val in updated_row.items():
+            if col not in df.columns:
                 df[col] = None
-                df.at[idx_list[0], col] = val
+            df.at[idx_list[0], col] = val
+
+        # Re-sanitise before writing to avoid dtype conflicts
+        df = sanitise_df(df)
         conn.update(worksheet="Sheet1", data=df)
-        st.success(f"Invoice #{original_inv_no} updated successfully!")
-        # Refresh view_invoice with the new data
-        st.session_state.view_invoice = updated_data
+        st.success(f"Invoice #{original_inv_no} updated!")
+        st.session_state.view_invoice      = updated_row
         st.session_state.edit_preview_items = None
         st.session_state.edit_preview_meta  = None
         st.rerun()
@@ -292,13 +335,15 @@ def add_part_callback():
         st.session_state.part_rate = None
 
 # ==========================================
-# 6. DASHBOARD TABLE (shared)
+# 6. DASHBOARD TABLE
 # ==========================================
 def display_interactive_rows(df, prefix=""):
     h1, h2, h3, h4, h5 = st.columns([1, 1.5, 3, 1.5, 3.5])
-    h1.markdown("**Inv No**"); h2.markdown("**Date**"); h3.markdown("**Customer**")
-    h4.markdown("**Net Total**"); h5.markdown("**Actions**")
+    for lbl, col in zip(["**Inv No**","**Date**","**Customer**","**Net Total**","**Actions**"],
+                        [h1, h2, h3, h4, h5]):
+        col.markdown(lbl)
     st.divider()
+
     for idx, row in df.iterrows():
         c1, c2, c3, c4, c5 = st.columns([1, 1.5, 3, 1.5, 3.5])
         c1.write(str(row['Invoice_No']))
@@ -306,10 +351,11 @@ def display_interactive_rows(df, prefix=""):
         c2.write(str(date_val.date()) if hasattr(date_val, 'date') else str(date_val))
         c3.write(str(row['Customer_Name']))
         c4.write(f"₹{float(row['Net_Total']):.2f}")
+
         with c5:
             b1, b2, b3 = st.columns([4, 4, 2])
             if b1.button("👁️ View / Edit", key=f"v_{prefix}_{idx}_{row['Invoice_No']}"):
-                st.session_state.view_invoice = row.to_dict()
+                st.session_state.view_invoice      = row.to_dict()
                 st.session_state.edit_preview_items = None
                 st.session_state.edit_preview_meta  = None
                 st.rerun()
@@ -322,7 +368,7 @@ def display_interactive_rows(df, prefix=""):
                 delete_invoice(row['Invoice_No'])
 
 # ==========================================
-# 7. FULLY EDITABLE PREVIEW / EDIT PANEL
+# 7. EDITABLE PREVIEW / EDIT PANEL
 # ==========================================
 def show_edit_preview():
     data = st.session_state.view_invoice
@@ -337,14 +383,18 @@ def show_edit_preview():
                 date_raw = datetime.strptime(date_raw[:10], "%Y-%m-%d").date()
             except Exception:
                 date_raw = date.today()
+        else:
+            date_raw = date.today()
+
         st.session_state.edit_preview_meta = {
-            'Customer_Name': str(data.get('Customer_Name', '')),
-            'Contact_No':    str(data.get('Contact_No', '')),
-            'Vehicle_No':    str(data.get('Vehicle_No', '')),
-            'Total_KMs':     str(data.get('Total_KMs', '')),
-            'Invoice_Date':  date_raw,
-            'Mechanic_Names':str(data.get('Mechanic_Names', '')),
+            'Customer_Name':  str(data.get('Customer_Name', '')),
+            'Contact_No':     re.sub(r'\.0$', '', str(data.get('Contact_No', ''))),
+            'Vehicle_No':     str(data.get('Vehicle_No', '')),
+            'Total_KMs':      str(data.get('Total_KMs', '')),
+            'Invoice_Date':   date_raw,
+            'Mechanic_Names': str(data.get('Mechanic_Names', '')),
         }
+
     if st.session_state.edit_preview_items is None:
         st.session_state.edit_preview_items = [
             dict(item) for item in parse_items_json(data.get('Items_JSON', '[]'))
@@ -353,10 +403,14 @@ def show_edit_preview():
     meta  = st.session_state.edit_preview_meta
     items = st.session_state.edit_preview_items
 
-    st.markdown(f"## 📋 Invoice #{data.get('Invoice_No')}  &nbsp; <span style='font-size:14px;color:#FF6B2B;'>— all fields are editable</span>", unsafe_allow_html=True)
+    st.markdown(
+        f"## 📋 Invoice #{data.get('Invoice_No')} "
+        f"<span style='font-size:14px;color:#FF6B2B;'>— all fields editable</span>",
+        unsafe_allow_html=True
+    )
     st.divider()
 
-    # ── HEADER FIELDS (all editable) ──
+    # ── HEADER FIELDS ──
     col1, col2, col3 = st.columns(3)
     with col1:
         meta['Customer_Name'] = st.text_input("Customer Name", value=meta['Customer_Name'], key="ep_cust").upper()
@@ -369,39 +423,42 @@ def show_edit_preview():
         meta['Mechanic_Names']= st.text_input("Mechanic(s)",   value=meta['Mechanic_Names'],key="ep_mech").upper()
 
     st.divider()
-    st.markdown("#### 🔧 Parts / Services — edit inline, then save")
+    st.markdown("#### 🔧 Parts / Services")
 
     # ── EDITABLE PARTS TABLE ──
     to_delete = None
-    tbl_h = st.columns([3, 1, 1, 1, 0.5])
-    for lbl in ["Description", "Qty", "Rate (₹)", "Amount (₹)", "Del"]:
-        tbl_h.pop(0).markdown(f"**{lbl}**")
+    hc = st.columns([3, 1, 1, 1, 0.5])
+    for lbl, col in zip(["**Description**","**Qty**","**Rate (₹)**","**Amount (₹)**","**Del**"], hc):
+        col.markdown(lbl)
 
     for i, item in enumerate(items):
         c1, c2, c3, c4, c5 = st.columns([3, 1, 1, 1, 0.5])
         new_desc = c1.text_input("", value=str(item.get('Description', '')),
                                   key=f"ep_desc_{i}", label_visibility="collapsed").upper()
-        new_qty  = c2.number_input("", value=int(item.get('Qty', 1)),   min_value=1,
+        new_qty  = c2.number_input("", value=int(item.get('Qty', 1)),    min_value=1,
                                    key=f"ep_qty_{i}",  label_visibility="collapsed")
         new_rate = c3.number_input("", value=float(item.get('Rate', 0)), min_value=0.0, step=1.0,
                                    key=f"ep_rate_{i}", label_visibility="collapsed")
         new_amt  = new_qty * new_rate
-        c4.markdown(f"<div style='padding-top:32px;font-family:monospace;'>₹{new_amt:.2f}</div>", unsafe_allow_html=True)
+        c4.markdown(f"<div style='padding-top:32px;font-family:monospace;'>₹{new_amt:.2f}</div>",
+                    unsafe_allow_html=True)
         if c5.button("🗑", key=f"ep_del_{i}"):
             to_delete = i
-        # update buffer
         items[i] = {'Description': new_desc, 'Qty': new_qty, 'Rate': new_rate, 'Amount': new_amt}
 
     if to_delete is not None:
         items.pop(to_delete)
         st.rerun()
 
-    # ── ADD NEW ROW to existing invoice ──
+    # ── ADD NEW ROW ──
     st.markdown("**➕ Add a part to this invoice**")
     na1, na2, na3, na4 = st.columns([3, 1, 1, 1])
-    new_row_desc = na1.text_input("New description", key="ep_new_desc", placeholder="Part / service name").upper()
-    new_row_qty  = na2.number_input("Qty",  min_value=1, value=1,   key="ep_new_qty",  label_visibility="collapsed")
-    new_row_rate = na3.number_input("Rate", min_value=0.0, value=0.0, step=1.0, key="ep_new_rate", label_visibility="collapsed")
+    new_row_desc = na1.text_input("New description", key="ep_new_desc",
+                                   placeholder="Part / service name").upper()
+    new_row_qty  = na2.number_input("Qty",  min_value=1, value=1,   key="ep_new_qty",
+                                    label_visibility="collapsed")
+    new_row_rate = na3.number_input("Rate", min_value=0.0, value=0.0, step=1.0,
+                                    key="ep_new_rate", label_visibility="collapsed")
     if na4.button("Add Row", key="ep_add_row"):
         if new_row_desc:
             items.append({'Description': new_row_desc, 'Qty': new_row_qty,
@@ -412,53 +469,46 @@ def show_edit_preview():
 
     st.divider()
 
-    # ── LABOUR / TOTALS ──
-    gr_total  = sum(float(it.get('Amount', 0)) for it in items)
-    fin1, fin2 = st.columns(2)
-    labour = fin1.number_input("Labour Charges (₹)", min_value=0.0, step=10.0,
+    # ── LABOUR / TOTALS (no Received_Amt) ──
+    gr_total = sum(float(it.get('Amount', 0)) for it in items)
+    labour   = st.number_input("Labour Charges (₹)", min_value=0.0, step=10.0,
                                 value=float(data.get('Labour_Charges', 0)), key="ep_labour")
     net_total = gr_total + labour
-    recv = fin2.number_input("Received Amount (₹)", step=10.0,
-                              value=float(data.get('Received_Amt', net_total)), key="ep_recv")
-    st.info(f"**GR Total:** ₹{gr_total:.2f}   |   **Labour:** ₹{labour:.2f}   |   **Net Total:** ₹{net_total:.2f}   |   **Received:** ₹{recv:.2f}")
+    st.info(f"**GR Total:** ₹{gr_total:.2f}   |   **Labour:** ₹{labour:.2f}   |   **Net Total:** ₹{net_total:.2f}")
 
-    # ── ACTION BUTTONS ──
+    # ── ACTIONS ──
     act1, act2, act3 = st.columns([2, 2, 2])
 
     if act1.button("💾 Save All Changes", type="primary", use_container_width=True):
-        updated = {
-            'Invoice_No':       data.get('Invoice_No'),
-            'Invoice_Date':     str(meta['Invoice_Date']),
-            'Customer_Name':    meta['Customer_Name'],
-            'Contact_No':       meta['Contact_No'],
-            'Vehicle_No':       meta['Vehicle_No'],
-            'Total_KMs':        meta['Total_KMs'],
-            'Mechanic_Names':   meta['Mechanic_Names'],
-            'Items_JSON':       json.dumps(items),
-            'Total_Items_Count':len(items),
-            'GR_Total':         gr_total,
-            'Labour_Charges':   labour,
-            'Net_Total':        net_total,
-            'Received_Amt':     recv,
-        }
-        save_updated_invoice(int(data.get('Invoice_No')), updated)
+        row = build_row_dict(
+            data.get('Invoice_No'), meta['Invoice_Date'],
+            meta['Customer_Name'], meta['Contact_No'],
+            meta['Vehicle_No'],    meta['Total_KMs'],
+            meta['Mechanic_Names'], items, gr_total, labour, net_total
+        )
+        save_updated_invoice(int(data.get('Invoice_No')), row)
 
-    pdf_data = {**meta, **{
-        'Invoice_No': data.get('Invoice_No'),
-        'Invoice_Date': str(meta['Invoice_Date']),
-        'Items_JSON': json.dumps(items),
+    pdf_data = {
+        'Invoice_No':        data.get('Invoice_No'),
+        'Invoice_Date':      str(meta['Invoice_Date']),
+        'Customer_Name':     meta['Customer_Name'],
+        'Contact_No':        meta['Contact_No'],
+        'Vehicle_No':        meta['Vehicle_No'],
+        'Total_KMs':         meta['Total_KMs'],
+        'Mechanic_Names':    meta['Mechanic_Names'],
+        'Items_JSON':        json.dumps(items),
         'Total_Items_Count': len(items),
-        'GR_Total': gr_total, 'Labour_Charges': labour,
-        'Net_Total': net_total, 'Received_Amt': recv,
-        'Mechanic_Names': meta['Mechanic_Names'],
-    }}
+        'GR_Total':          gr_total,
+        'Labour_Charges':    labour,
+        'Net_Total':         net_total,
+    }
     pdf_bytes = generate_pdf(pdf_data)
     act2.download_button("📥 Download PDF", data=pdf_bytes,
         file_name=f"Invoice_{data.get('Invoice_No')}.pdf",
         mime="application/pdf", use_container_width=True)
 
     if act3.button("❌ Close", use_container_width=True):
-        st.session_state.view_invoice      = None
+        st.session_state.view_invoice       = None
         st.session_state.edit_preview_items = None
         st.session_state.edit_preview_meta  = None
         st.rerun()
@@ -470,11 +520,11 @@ if st.session_state.view_invoice:
     show_edit_preview()
 
 else:
-    tab_dash, tab_create, tab_search = st.tabs(["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"])
+    tab_dash, tab_create, tab_search = st.tabs(
+        ["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"]
+    )
 
-    # ──────────────────────────────────────
-    # TAB 1: DASHBOARD
-    # ──────────────────────────────────────
+    # ── TAB 1: DASHBOARD ──
     with tab_dash:
         st.subheader("Last 10 Invoices")
         if not df_db.empty:
@@ -483,27 +533,24 @@ else:
         else:
             st.info("No invoices found.")
 
-    # ──────────────────────────────────────
-    # TAB 2: CREATE INVOICE — editable pending table
-    # ──────────────────────────────────────
+    # ── TAB 2: CREATE INVOICE ──
     with tab_create:
         st.subheader("1. Invoice Details")
-        col1, col2, col3 = st.columns([1, 1, 2])
-        inv_date = col1.date_input("Date", date.today(), key="c_date")
+        inv_date = st.date_input("Date", date.today(), key="c_date")
         st.markdown(f"**Invoice No:** `{st.session_state.next_invoice_no}`")
 
         col4, col5, col6, col7 = st.columns(4)
-        raw_cust    = col4.text_input("Customer Name", placeholder="Enter Name")
-        cust_name   = raw_cust.upper()
-        raw_contact = col5.text_input("Contact No", placeholder="10 digits", max_chars=10)
-        cust_contact= re.sub(r'\D', '', raw_contact)
+        raw_cust     = col4.text_input("Customer Name", placeholder="Enter Name")
+        cust_name    = raw_cust.upper()
+        raw_contact  = col5.text_input("Contact No", placeholder="10 digits", max_chars=10)
+        cust_contact = re.sub(r'\D', '', raw_contact)
         if raw_contact and raw_contact != cust_contact:
             st.warning("Numbers only — letters removed.")
         elif cust_contact and len(cust_contact) < 10:
             st.warning("⚠️ Must be 10 digits.")
-        veh_no        = col6.text_input("Vehicle No", placeholder="MH05CR8172").upper()
-        tot_kms       = col7.text_input("Total KMs",  placeholder="8500").upper()
-        mechanic_names= st.text_input("Mechanic Name(s)", placeholder="Enter mechanics").upper()
+        veh_no         = col6.text_input("Vehicle No",     placeholder="MH05CR8172").upper()
+        tot_kms        = col7.text_input("Total KMs",       placeholder="8500")
+        mechanic_names = st.text_input("Mechanic Name(s)", placeholder="Enter mechanics").upper()
 
         st.divider()
         st.subheader("2. Add Parts")
@@ -512,7 +559,8 @@ else:
         p_col1, p_col2, p_col3, p_col4 = st.columns([3, 1, 1, 1])
         with p_col1:
             st.markdown("**Description**")
-            st.selectbox("Select Part", AVAILABLE_PARTS, key="part_select", label_visibility="collapsed")
+            st.selectbox("Select Part", AVAILABLE_PARTS, key="part_select",
+                         label_visibility="collapsed")
             if st.session_state.get("part_select") == "--- TYPE NEW PART ---":
                 st.text_input("Custom Part", key="part_desc_custom",
                               placeholder="Type new part...", label_visibility="collapsed")
@@ -530,12 +578,12 @@ else:
 
         # ── EDITABLE PENDING TABLE ──
         if st.session_state.pending_items:
-            st.markdown("**Parts Added — click any cell to edit, or delete a row:**")
-
+            st.markdown("**Parts Added — edit inline or delete:**")
             to_del = None
             hc1, hc2, hc3, hc4, hc5 = st.columns([4, 1, 1.2, 1.2, 0.6])
-            hc1.markdown("**Description**"); hc2.markdown("**Qty**")
-            hc3.markdown("**Rate (₹)**");    hc4.markdown("**Amount (₹)**"); hc5.markdown("**Del**")
+            for lbl, col in zip(["**Description**","**Qty**","**Rate (₹)**","**Amount (₹)**","**Del**"],
+                                 [hc1,hc2,hc3,hc4,hc5]):
+                col.markdown(lbl)
 
             for i, item in enumerate(st.session_state.pending_items):
                 ec1, ec2, ec3, ec4, ec5 = st.columns([4, 1, 1.2, 1.2, 0.6])
@@ -546,7 +594,8 @@ else:
                 nr = ec3.number_input("", value=float(item['Rate']), min_value=0.0, step=1.0,
                                       key=f"pi_rate_{i}", label_visibility="collapsed")
                 na = nq * nr
-                ec4.markdown(f"<div style='padding-top:32px;font-family:monospace;'>₹{na:.2f}</div>", unsafe_allow_html=True)
+                ec4.markdown(f"<div style='padding-top:32px;font-family:monospace;'>₹{na:.2f}</div>",
+                             unsafe_allow_html=True)
                 if ec5.button("🗑", key=f"pi_del_{i}"):
                     to_del = i
                 st.session_state.pending_items[i] = {'Description': nd, 'Qty': nq, 'Rate': nr, 'Amount': na}
@@ -556,14 +605,12 @@ else:
                 st.rerun()
 
             st.divider()
-            fin_col1, fin_col2 = st.columns(2)
-            labour_chrgs = fin_col1.number_input("Labour Charges (₹)", min_value=0.0,
-                                                  step=10.0, value=None, placeholder="0.0")
-            gr_total   = sum(it['Amount'] for it in st.session_state.pending_items)
-            safe_labour= labour_chrgs if labour_chrgs is not None else 0.0
-            net_total  = gr_total + safe_labour
-            received_amt = fin_col2.number_input("Received Amount (₹)", step=10.0, value=float(net_total))
-            st.write(f"**GR Total:** ₹{gr_total:.2f} &nbsp;|&nbsp; **Net Total:** ₹{net_total:.2f}")
+            labour_chrgs = st.number_input("Labour Charges (₹)", min_value=0.0,
+                                            step=10.0, value=None, placeholder="0.0")
+            gr_total    = sum(it['Amount'] for it in st.session_state.pending_items)
+            safe_labour = labour_chrgs if labour_chrgs is not None else 0.0
+            net_total   = gr_total + safe_labour
+            st.write(f"**GR Total:** ₹{gr_total:.2f}   |   **Net Total:** ₹{net_total:.2f}")
 
             if st.button("💾 Save & Generate Invoice", type="primary", use_container_width=True):
                 if not cust_name:
@@ -571,24 +618,18 @@ else:
                 elif cust_contact and len(cust_contact) < 10:
                     st.error("Valid 10-digit contact number required.")
                 else:
-                    new_row = {
-                        "Invoice_No":        st.session_state.next_invoice_no,
-                        "Invoice_Date":      str(inv_date),
-                        "Customer_Name":     cust_name,
-                        "Contact_No":        cust_contact,
-                        "Vehicle_No":        veh_no,
-                        "Total_KMs":         tot_kms,
-                        "Mechanic_Names":    mechanic_names,
-                        "Items_JSON":        json.dumps(st.session_state.pending_items),
-                        "Total_Items_Count": len(st.session_state.pending_items),
-                        "GR_Total":          gr_total,
-                        "Labour_Charges":    safe_labour,
-                        "Net_Total":         net_total,
-                        "Received_Amt":      received_amt if received_amt is not None else net_total,
-                    }
-                    updated_df = pd.concat([df_db, pd.DataFrame([new_row])], ignore_index=True)
+                    new_row = build_row_dict(
+                        st.session_state.next_invoice_no, inv_date,
+                        cust_name, cust_contact, veh_no, tot_kms,
+                        mechanic_names, st.session_state.pending_items,
+                        gr_total, safe_labour, net_total
+                    )
+                    fresh_df = load_db()
+                    updated_df = pd.concat([fresh_df, pd.DataFrame([new_row])], ignore_index=True)
+                    updated_df = sanitise_df(updated_df)
                     conn.update(worksheet="Sheet1", data=updated_df)
-                    st.session_state.view_invoice      = new_row
+
+                    st.session_state.view_invoice       = new_row
                     st.session_state.edit_preview_items = None
                     st.session_state.edit_preview_meta  = None
                     st.success(f"Invoice {st.session_state.next_invoice_no} saved!")
@@ -596,46 +637,40 @@ else:
                     st.session_state.pending_items = []
                     st.rerun()
 
-    # ──────────────────────────────────────
-    # TAB 3: SEARCH — vehicle number + date range
-    # ──────────────────────────────────────
+    # ── TAB 3: SEARCH ──
     with tab_search:
         st.subheader("🔍 Search by Vehicle Number")
-
         sc1, sc2, sc3 = st.columns([2, 1, 1])
         veh_query = sc1.text_input("Vehicle Number", placeholder="e.g. MH05CR8172").upper().strip()
 
-        # Date range — default to full year
         min_date = date(2020, 1, 1)
         max_date = date.today()
         if not df_db.empty and 'Invoice_Date' in df_db.columns:
-            valid_dates = df_db['Invoice_Date'].dropna()
-            if not valid_dates.empty:
-                min_date = valid_dates.min().date() if hasattr(valid_dates.min(), 'date') else min_date
-                max_date = valid_dates.max().date() if hasattr(valid_dates.max(), 'date') else max_date
+            valid = df_db['Invoice_Date'].dropna()
+            if not valid.empty:
+                mn = valid.min()
+                mx = valid.max()
+                min_date = mn.date() if hasattr(mn, 'date') else min_date
+                max_date = mx.date() if hasattr(mx, 'date') else max_date
 
         date_from = sc2.date_input("From Date", value=min_date, key="s_from")
         date_to   = sc3.date_input("To Date",   value=max_date, key="s_to")
 
-        if veh_query or st.button("Show all in date range"):
+        run_search = veh_query or st.button("Show all in date range")
+        if run_search:
             if df_db.empty:
                 st.info("No invoices in database.")
             else:
                 df_search = df_db.copy()
-
-                # filter by vehicle
                 if veh_query:
                     df_search = df_search[
                         df_search['Vehicle_No'].astype(str).str.upper().str.contains(veh_query, na=False)
                     ]
-
-                # filter by date range
                 if 'Invoice_Date' in df_search.columns:
                     df_search = df_search[
                         (df_search['Invoice_Date'].dt.date >= date_from) &
                         (df_search['Invoice_Date'].dt.date <= date_to)
                     ]
-
                 df_search = df_search.sort_values(by="Invoice_No", ascending=False)
 
                 if df_search.empty:
@@ -644,7 +679,7 @@ else:
                     total_rev = df_search['Net_Total'].astype(float).sum()
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Invoices Found", len(df_search))
-                    m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
-                    m3.metric("Date Range", f"{date_from} → {date_to}")
+                    m2.metric("Total Revenue",  f"₹{total_rev:,.2f}")
+                    m3.metric("Date Range",     f"{date_from} → {date_to}")
                     st.divider()
                     display_interactive_rows(df_search, prefix="search")
