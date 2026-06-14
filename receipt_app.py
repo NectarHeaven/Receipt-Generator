@@ -23,8 +23,7 @@ def parse_items_json(raw_data):
     return []
 
 # Columns that must always be stored as plain strings in the sheet.
-# This prevents pandas/gsheets from casting phone numbers to float64.
-STR_COLS = ['Customer_Name', 'Contact_No', 'Vehicle_No', 'Total_KMs',
+STR_COLS = ['Customer_Name', 'Contact_No', 'Vehicle_No', 'Vehicle_Name', 'Total_KMs',
             'Mechanic_Names', 'Invoice_Date', 'Items_JSON']
 
 def sanitise_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -35,13 +34,13 @@ def sanitise_df(df: pd.DataFrame) -> pd.DataFrame:
                 df[col]
                 .fillna('')
                 .astype(str)
-                .str.replace(r'\.0$', '', regex=True)   # "9876543210.0" → "9876543210"
+                .str.replace(r'\.0$', '', regex=True)
                 .str.strip()
             )
     return df
 
 # ==========================================
-# 1. PDF GENERATOR  (Received_Amt removed)
+# 1. PDF GENERATOR
 # ==========================================
 class ReceiptPDF(FPDF):
     def header(self):
@@ -77,6 +76,7 @@ class ReceiptPDF(FPDF):
         self.cell(30, 5, "BILL NO.");     self.set_font("helvetica", "", 9)
         self.cell(45, 5, str(data.get('Invoice_No', '')), align="R")
         self.ln(5)
+        
         self.set_x(10)
         self.set_font("helvetica", "B", 9)
         self.cell(25, 5, "CONTACT NO."); self.set_font("helvetica", "", 9)
@@ -85,20 +85,23 @@ class ReceiptPDF(FPDF):
         self.set_font("helvetica", "B", 9)
         self.cell(30, 5, "DATE");         self.set_font("helvetica", "", 9)
         
-        # Display clean date string in PDF
         date_val = data.get('Invoice_Date', '')
         if hasattr(date_val, 'strftime'):
             date_str = date_val.strftime("%Y-%m-%d")
         else:
             date_str = str(date_val)[:10]
         self.cell(45, 5, date_str, align="R")
-        
         self.ln(5)
+        
         self.set_x(10)
         self.set_font("helvetica", "B", 9)
         self.cell(25, 5, "VEHICLE NO."); self.set_font("helvetica", "", 9)
         self.cell(80, 5, str(data.get('Vehicle_No', '')))
+        self.set_font("helvetica", "B", 9)
+        self.cell(30, 5, "VEHICLE NAME"); self.set_font("helvetica", "", 9)
+        self.cell(45, 5, str(data.get('Vehicle_Name', '')).upper(), align="R")
         self.ln(5)
+        
         self.set_x(10)
         self.set_font("helvetica", "B", 9)
         self.cell(25, 5, "TOTAL KMS");   self.set_font("helvetica", "", 9)
@@ -229,11 +232,8 @@ def load_db():
             df['Invoice_No'] = pd.to_numeric(df['Invoice_No'], errors='coerce').fillna(0).astype(int)
         
         if 'Invoice_Date' in df.columns:
-            # Coerce unparseable values to NaT, then map completely to pure datetime.date objects safely
             parsed_dates = pd.to_datetime(df['Invoice_Date'], errors='coerce')
             default_date = date.today()
-            
-            # Extract only the date part; if NaT, swap with default native python date object immediately
             df['Invoice_Date'] = [p.date() if pd.notna(p) else default_date for p in parsed_dates]
             
         for num_col in ['GR_Total', 'Labour_Charges', 'Net_Total', 'Total_Items_Count']:
@@ -285,9 +285,9 @@ def delete_invoice(inv_no):
     except Exception as e:
         st.error(f"Error deleting: {e}")
 
-def build_row_dict(inv_no, inv_date, cust, contact, veh, kms, mech,
+def build_row_dict(inv_no, inv_date, cust, contact, veh, veh_name, kms, mech,
                     items, gr_total, labour, net_total):
-    """Single place to build a row — explicitly stores dates as text YYYY-MM-DD format."""
+    """Single place to build a row — handles Vehicle_Name."""
     if hasattr(inv_date, 'strftime'):
         date_str = inv_date.strftime("%Y-%m-%d")
     else:
@@ -299,6 +299,7 @@ def build_row_dict(inv_no, inv_date, cust, contact, veh, kms, mech,
         "Customer_Name":     str(cust),
         "Contact_No":        str(contact),
         "Vehicle_No":        str(veh),
+        "Vehicle_Name":      str(veh_name),
         "Total_KMs":         str(kms),
         "Mechanic_Names":    str(mech),
         "Items_JSON":        json.dumps(items),
@@ -328,7 +329,6 @@ def save_updated_invoice(original_inv_no, updated_row: dict):
         conn.update(worksheet="Sheet1", data=df)
         st.success(f"Invoice #{original_inv_no} updated!")
         
-        # Resolve state safely by turning string back to native Python date object
         resolved_row = updated_row.copy()
         resolved_row['Invoice_Date'] = datetime.strptime(updated_row['Invoice_Date'], "%Y-%m-%d").date()
         
@@ -397,10 +397,9 @@ def display_interactive_rows(df, prefix=""):
 def show_edit_preview():
     data = st.session_state.view_invoice
 
-    # ── initialise edit buffers on first open ──
     if st.session_state.edit_preview_meta is None:
         date_raw = data.get('Invoice_Date', '')
-        safe_date = date.today()  # absolute fallback
+        safe_date = date.today()
         
         if pd.isna(date_raw) or not date_raw:
             safe_date = date.today()
@@ -418,6 +417,7 @@ def show_edit_preview():
             'Customer_Name':  str(data.get('Customer_Name', '')),
             'Contact_No':     re.sub(r'\.0$', '', str(data.get('Contact_No', ''))),
             'Vehicle_No':     str(data.get('Vehicle_No', '')),
+            'Vehicle_Name':   str(data.get('Vehicle_Name', '')),
             'Total_KMs':      str(data.get('Total_KMs', '')),
             'Invoice_Date':   safe_date,
             'Mechanic_Names': str(data.get('Mechanic_Names', '')),
@@ -444,10 +444,12 @@ def show_edit_preview():
         meta['Contact_No']    = st.text_input("Contact No",    value=meta['Contact_No'],    key="ep_contact")
     with col2:
         meta['Vehicle_No']    = st.text_input("Vehicle No",    value=meta['Vehicle_No'],    key="ep_veh").upper()
-        meta['Total_KMs']     = st.text_input("Total KMs",     value=meta['Total_KMs'],     key="ep_kms")
+        meta['Vehicle_Name']  = st.text_input("Vehicle Name",  value=meta['Vehicle_Name'],  key="ep_vname").upper()
     with col3:
+        meta['Total_KMs']     = st.text_input("Total KMs",     value=meta['Total_KMs'],     key="ep_kms")
         meta['Invoice_Date']  = st.date_input("Date",          value=meta['Invoice_Date'],  key="ep_date")
-        meta['Mechanic_Names']= st.text_input("Mechanic(s)",   value=meta['Mechanic_Names'],key="ep_mech").upper()
+    
+    st.text_input("Mechanic(s)", value=meta['Mechanic_Names'], key="ep_mech").upper()
 
     st.divider()
     st.markdown("#### 🔧 Parts / Services")
@@ -506,7 +508,7 @@ def show_edit_preview():
         row = build_row_dict(
             data.get('Invoice_No'), meta['Invoice_Date'],
             meta['Customer_Name'], meta['Contact_No'],
-            meta['Vehicle_No'],    meta['Total_KMs'],
+            meta['Vehicle_No'],    meta['Vehicle_Name'], meta['Total_KMs'],
             meta['Mechanic_Names'], items, gr_total, labour, net_total
         )
         save_updated_invoice(int(data.get('Invoice_No')), row)
@@ -517,6 +519,7 @@ def show_edit_preview():
         'Customer_Name':     meta['Customer_Name'],
         'Contact_No':        meta['Contact_No'],
         'Vehicle_No':        meta['Vehicle_No'],
+        'Vehicle_Name':      meta['Vehicle_Name'],
         'Total_KMs':         meta['Total_KMs'],
         'Mechanic_Names':    meta['Mechanic_Names'],
         'Items_JSON':        json.dumps(items),
@@ -572,8 +575,11 @@ else:
         elif cust_contact and len(cust_contact) < 10:
             st.warning("⚠️ Must be 10 digits.")
         veh_no         = col6.text_input("Vehicle No",     placeholder="MH05CR8172").upper().strip()
-        tot_kms        = col7.text_input("Total KMs",       placeholder="8500")
-        mechanic_names = st.text_input("Mechanic Name(s)", placeholder="Enter mechanics").upper()
+        veh_name       = col7.text_input("Vehicle Name",   placeholder="e.g. ACTIVA").upper().strip()
+        
+        col_kms, col_mech = st.columns(2)
+        tot_kms        = col_kms.text_input("Total KMs",   placeholder="8500")
+        mechanic_names = col_mech.text_input("Mechanic Name(s)", placeholder="Enter mechanics").upper()
 
         st.divider()
         st.subheader("2. Add Parts")
@@ -641,13 +647,12 @@ else:
                 else:
                     new_row = build_row_dict(
                         st.session_state.next_invoice_no, inv_date,
-                        cust_name, cust_contact, veh_no, tot_kms,
+                        cust_name, cust_contact, veh_no, veh_name, tot_kms,
                         mechanic_names, st.session_state.pending_items,
                         gr_total, safe_labour, net_total
                     )
                     fresh_df = load_db()
                     
-                    # Wrap dictionary inside a DataFrame and convert date row instantly
                     new_row_df = pd.DataFrame([new_row])
                     if 'Invoice_Date' in new_row_df.columns:
                         new_row_df['Invoice_Date'] = pd.to_datetime(new_row_df['Invoice_Date']).dt.date
@@ -656,7 +661,6 @@ else:
                     updated_df = sanitise_df(updated_df)
                     conn.update(worksheet="Sheet1", data=updated_df)
 
-                    # Hand over clean object instance to avoid viewing crashes
                     resolved_row = new_row.copy()
                     resolved_row['Invoice_Date'] = inv_date
 
@@ -678,7 +682,6 @@ else:
         max_date = date.today()
         
         if not df_db.empty and 'Invoice_Date' in df_db.columns:
-            # Extract valid python dates without risking NaN/NaT runtime conflicts
             valid_dates = [d for d in df_db['Invoice_Date'] if isinstance(d, date) and not pd.isna(d)]
             if valid_dates:
                 min_date = min(valid_dates)
@@ -698,7 +701,6 @@ else:
                         df_search['Vehicle_No'].astype(str).str.upper().str.contains(veh_query, na=False)
                     ]
                 
-                # Perform direct, pure-python object comparison across dates 
                 if 'Invoice_Date' in df_search.columns:
                     df_search = df_search[
                         df_search['Invoice_Date'].apply(lambda d: date_from <= d <= date_to if isinstance(d, date) else False)
