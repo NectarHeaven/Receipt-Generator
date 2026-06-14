@@ -212,6 +212,7 @@ defaults = {
     'part_select':        "--- TYPE NEW PART ---",
     'edit_preview_items': None,
     'edit_preview_meta':  None,
+    'delete_confirm':     None,  # Holds Invoice ID slated for deletion
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -280,6 +281,7 @@ def delete_invoice(inv_no):
         updated = df[df['Invoice_No'] != inv_no]
         conn.update(worksheet="Sheet1", data=updated)
         st.session_state.view_invoice = None
+        st.session_state.delete_confirm = None
         st.success(f"Invoice #{inv_no} deleted.")
         st.rerun()
     except Exception as e:
@@ -287,7 +289,6 @@ def delete_invoice(inv_no):
 
 def build_row_dict(inv_no, inv_date, cust, contact, veh, veh_name, kms, mech,
                     items, gr_total, labour, net_total):
-    """Single place to build a row — handles Vehicle_Name."""
     if hasattr(inv_date, 'strftime'):
         date_str = inv_date.strftime("%Y-%m-%d")
     else:
@@ -389,7 +390,8 @@ def display_interactive_rows(df, prefix=""):
                 mime="application/pdf",
                 key=f"d_{prefix}_{idx}_{row['Invoice_No']}")
             if b3.button("🗑️", key=f"del_{prefix}_{idx}_{row['Invoice_No']}"):
-                delete_invoice(row['Invoice_No'])
+                st.session_state.delete_confirm = int(row['Invoice_No'])
+                st.rerun()
 
 # ==========================================
 # 7. EDITABLE PREVIEW / EDIT PANEL
@@ -546,6 +548,20 @@ if st.session_state.view_invoice:
     show_edit_preview()
 
 else:
+    # ── GLOBAL CONFIRMATION OVERLAY ALERT ──
+    if st.session_state.delete_confirm is not None:
+        target_inv = st.session_state.delete_confirm
+        st.error(f"### ⚠️ Permanent Deletion Warning")
+        st.markdown(f"Are you absolutely sure you want to delete **Invoice #{target_inv}**? This action cannot be undone.")
+        
+        ac1, ac2, _ = st.columns([2, 2, 6])
+        if ac1.button("🔥 Yes, permanently delete", type="primary", use_container_width=True):
+            delete_invoice(target_inv)
+        if ac2.button("🚫 Cancel", use_container_width=True):
+            st.session_state.delete_confirm = None
+            st.rerun()
+        st.divider()
+
     tab_dash, tab_create, tab_search = st.tabs(
         ["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"]
     )
