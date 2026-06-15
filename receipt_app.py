@@ -714,6 +714,8 @@ else:
                 if 'Invoice_Date' in df_s.columns:
                     df_s = df_s[df_s['Invoice_Date'].apply(
                         lambda d: date_from <= d <= date_to if isinstance(d, date) else False)]
+                
+                # Fixed indentation safety layer here
                 df_s = df_s.sort_values("Invoice_No", ascending=False)
                 if df_s.empty:
                     st.warning("No records found.")
