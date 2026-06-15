@@ -22,7 +22,6 @@ def parse_items_json(raw_data):
         return raw_data
     return []
 
-# All columns that must stay as plain strings
 STR_COLS = [
     'Customer_Name', 'Contact_No', 'Vehicle_No', 'Vehicle_Name',
     'Total_KMs', 'Mechanic_Names', 'Mechanic_Name', 'Invoice_Date', 'Items_JSON',
@@ -38,7 +37,6 @@ def sanitise_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def safe_date(val):
-    """Always return a Python date, never NaT or None."""
     try:
         if val is None or (isinstance(val, float) and pd.isna(val)):
             return date.today()
@@ -46,7 +44,7 @@ def safe_date(val):
             return val
         if isinstance(val, datetime):
             return val.date()
-        if hasattr(val, 'date'):          # pandas Timestamp
+        if hasattr(val, 'date'):
             d = val.date()
             return d if str(d) != 'NaT' else date.today()
         if isinstance(val, str) and val.strip():
@@ -56,7 +54,6 @@ def safe_date(val):
     return date.today()
 
 def mech_col(df):
-    """Return whichever mechanic column exists in this df."""
     if 'Mechanic_Names' in df.columns:
         return 'Mechanic_Names'
     if 'Mechanic_Name' in df.columns:
@@ -64,11 +61,12 @@ def mech_col(df):
     return None
 
 # ─────────────────────────────────────────────
-# 1. PDF GENERATOR
+# 1. PDF GENERATOR (FIXED GRIDLINES & BOUNDARIES)
 # ─────────────────────────────────────────────
 class ReceiptPDF(FPDF):
     def header(self):
-        self.rect(10, 10, 190, 254)
+        # Full content bounding box frame
+        self.rect(10, 10, 190, 246)
         self.set_xy(10, 12); self.set_font("helvetica", "B", 18)
         self.cell(110, 8, "SHREE GURUDEV AUTOMOBILES", border=0, ln=1, align="L")
         self.set_xy(10, 20); self.set_font("helvetica", "B", 8)
@@ -82,7 +80,8 @@ class ReceiptPDF(FPDF):
             border=0, align="R")
 
     def footer(self):
-        self.set_xy(10, 266); self.set_font("helvetica", "", 9)
+        # Absolute positioned footer safely outside the main bounding box
+        self.set_xy(10, 260); self.set_font("helvetica", "", 9)
         self.cell(0, 5, f"PAGE NO. : {self.page_no()}", align="L")
 
     def add_customer_details(self, data):
@@ -129,41 +128,48 @@ class ReceiptPDF(FPDF):
         self.cell(25, 8, "AMOUNT", align="R")
         self.ln(8); self.line(10, 62, 200, 62)
 
-    def draw_grid_lines(self, is_last_page=True):
-        y = 240 if is_last_page else 264
-        self.line(20,  54, 20,  y)   # After SNo
-        self.line(110, 54, 110, 264) # After Description
-        self.line(125, 54, 125, y)   # After Qty
-        self.line(150, 54, 150, 264) # After MRP
-        self.line(175, 54, 175, y)   # After Disc
+    def draw_grid_lines(self, end_y=220):
+        # Vertical structural grids mapping across layout columns precisely
+        self.line(20,  54, 20,  end_y)  # After SNo
+        self.line(110, 54, 110, 256)  # After Description (Runs down through total elements)
+        self.line(125, 54, 125, end_y)  # After Qty
+        self.line(150, 54, 150, 256)  # After MRP (Runs through the totals values border)
+        self.line(175, 54, 175, end_y)  # After Disc
 
     def add_footer_totals(self, d):
-        self.line(10, 240, 200, 240)
-        self.set_xy(10, 240); self.set_font("helvetica", "B", 9)
-        self.cell(110, 6, f"TOTAL ITEMS {d.get('Total_Items_Count','')}", align="L")
-        self.line(10, 246, 120, 246)
-        self.set_xy(10, 247)
+        # Closes off the active line items table cleanly
+        self.line(10, 220, 200, 220)
+        
+        # Left side layout items
+        self.set_xy(10, 221); self.set_font("helvetica", "B", 9)
+        self.cell(100, 6, f"TOTAL ITEMS {d.get('Total_Items_Count','')}", align="L")
+        self.line(10, 228, 110, 228)
+        self.set_xy(10, 230)
         mc = d.get('Mechanic_Names', d.get('Mechanic_Name', ''))
-        self.cell(110, 6, f"MECHANIC : {mc}", align="L")
-        self.set_xy(10, 255); self.set_font("helvetica", "I", 12)
-        self.cell(110, 6, "*** THANK YOU ***", align="C")
+        self.cell(100, 6, f"MECHANIC : {mc}", align="L")
+        self.set_xy(10, 244); self.set_font("helvetica", "I", 12)
+        self.cell(100, 6, "*** THANK YOU ***", align="C")
 
+        # Right side pricing totals layout grid mapping
         self.set_font("helvetica", "", 9)
         rows = [
             ("SUBTOTAL",     float(d.get('GR_Total', 0))),
             ("LABOUR CHRGS", float(d.get('Labour_Charges', 0))),
         ]
-        y = 240
+        y = 220
         for label, val in rows:
-            self.set_xy(120, y)
-            self.cell(45, 6, label, align="R")
-            self.cell(35, 6, f"{val:.2f}", align="R")
-            y += 6; self.line(120, y, 200, y)
+            self.set_xy(110, y)
+            self.cell(40, 6, label, align="R")
+            self.cell(50, 6, f"{val:.2f}", align="R")
+            y += 6; self.line(110, y, 200, y)
 
-        self.set_xy(120, y); self.set_font("helvetica", "B", 9)
-        self.cell(45, 6, "NET TOTAL", align="R")
-        self.cell(35, 6, f"{float(d.get('Net_Total', 0)):.2f}", align="R")
-        self.line(120, y + 6, 200, y + 6)
+        self.set_xy(110, y); self.set_font("helvetica", "B", 9)
+        self.cell(40, 12, "NET TOTAL", align="R")
+        self.cell(50, 12, f"{float(d.get('Net_Total', 0)):.2f}", align="R")
+        
+        # Intermediate accounting lines underneath Net Total
+        self.line(110, y + 10, 200, y + 10)
+        self.line(110, y + 11.5, 200, y + 11.5)
 
 def generate_pdf(data):
     pdf = ReceiptPDF(orientation="P", unit="mm", format="A4")
@@ -171,6 +177,7 @@ def generate_pdf(data):
         pdf.add_page()
         pdf.add_customer_details(data)
         pdf.add_table_headers()
+        
     new_page(); pdf.set_font("helvetica", "", 9)
     for idx, item in enumerate(parse_items_json(data.get('Items_JSON', '[]'))):
         if not isinstance(item, dict): continue
@@ -181,9 +188,11 @@ def generate_pdf(data):
         amount = float(item.get('Amount', item.get('AMOUNT', 0)))
         
         sy = pdf.get_y()
-        if sy > 230:
-            pdf.draw_grid_lines(is_last_page=False); new_page()
+        # Safe threshold padding before page-break execution to avoid overlapping content
+        if sy > 212:
+            pdf.draw_grid_lines(end_y=220); new_page()
             pdf.set_font("helvetica", "", 9); sy = pdf.get_y()
+            
         pdf.set_xy(10, sy); pdf.cell(10, 6, str(idx+1), border=0, align="C")
         pdf.set_xy(20, sy); pdf.multi_cell(90, 6, desc, border=0, align="L")
         ey = pdf.get_y(); h = ey - sy
@@ -192,7 +201,8 @@ def generate_pdf(data):
         pdf.set_xy(150, sy); pdf.cell(25, h, f"{disc:.1f}%",  border=0, align="C")
         pdf.set_xy(175, sy); pdf.cell(25, h, f"{amount:.2f}", border=0, align="R")
         pdf.set_y(ey)
-    pdf.draw_grid_lines(is_last_page=True)
+        
+    pdf.draw_grid_lines(end_y=220)
     pdf.add_footer_totals(data)
     return bytes(pdf.output())
 
@@ -280,7 +290,7 @@ def build_row_dict(inv_no, inv_date, cust, contact, veh, veh_name,
         "Total_Items_Count": int(len(items)),
         "GR_Total":          round(float(gr_total),   2),
         "Labour_Charges":    round(float(labour),     2),
-        "Discount":          round(float(discount),   2), # Remains for table compatibility schema
+        "Discount":          round(float(discount),   2),
         "Net_Total":         round(float(net_total),  2),
     }
 
@@ -317,10 +327,9 @@ def save_updated_invoice(original_inv_no, updated_row: dict):
         st.error(f"Error saving: {e}")
 
 # ─────────────────────────────────────────────
-# 6. SHARED TOTALS WIDGET (Global Discount Removed)
+# 6. SHARED TOTALS WIDGET
 # ─────────────────────────────────────────────
 def totals_widget(gr_total, default_labour=0.0, labour_key="labour"):
-    """Renders Subtotal row, Labour and Net Total box."""
     st.markdown("""
     <style>
     .totals-box{background:#1a1a2e;border:1px solid #2e4057;border-radius:8px;
@@ -360,10 +369,8 @@ def totals_widget(gr_total, default_labour=0.0, labour_key="labour"):
 # 7. PARTS INPUT WIDGET
 # ─────────────────────────────────────────────
 def parts_input_widget(prefix="c"):
-    """Returns a dict {"Description":…, "Qty":…, "MRP":…, "Discount_Percent":…, "Amount":…}"""
     v_key = "part_v" if prefix == "c" else "ep_part_v"
     v = st.session_state[v_key]
-
     OPTIONS = [""] + ALL_PARTS   
 
     p1, p2, p3, p4, p5 = st.columns([2.5, 0.8, 1.1, 1.1, 1.1])
@@ -398,7 +405,6 @@ def parts_input_widget(prefix="c"):
             st.warning("Enter or select a description first.")
             return False
         
-        # Calculate amount with inline % discount auto-applied
         base_amt = int(qty) * float(mrp)
         final_amt = base_amt * (1.0 - (float(disc_p) / 100.0))
         
@@ -434,14 +440,12 @@ def editable_parts_table(items_list, key_prefix="t", inv_no=""):
         nd = c1.text_input("", value=str(item.get('Description','')), key=f"{key_prefix}_desc_{suffix}", label_visibility="collapsed").upper()
         nq = c2.number_input("", value=int(item.get('Qty',1)), min_value=1, key=f"{key_prefix}_qty_{suffix}", label_visibility="collapsed")
         
-        # Pulling existing key values if structural changes occurred
         current_mrp = float(item.get('MRP', item.get('mrp', item.get('Rate', item.get('RATE', 0)))))
         nm = c3.number_input("", value=current_mrp, min_value=0.0, step=1.0, key=f"{key_prefix}_mrp_{suffix}", label_visibility="collapsed")
         
         current_disc = float(item.get('Discount_Percent', item.get('discount_percent', 0)))
         ndisc = c4.number_input("", value=current_disc, min_value=0.0, max_value=100.0, step=0.5, key=f"{key_prefix}_disc_{suffix}", label_visibility="collapsed")
         
-        # Recalculate Row Amount dynamically
         na = round((nq * nm) * (1.0 - (ndisc / 100.0)), 2)
         
         c5.markdown(f"<div style='padding-top:6px;font-family:monospace;'>₹{na:.2f}</div>", unsafe_allow_html=True)
@@ -598,7 +602,6 @@ else:
     tab_dash, tab_create, tab_search = st.tabs(
         ["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"])
 
-    # ── DASHBOARD ──
     with tab_dash:
         st.subheader("Last 10 Invoices")
         if not df_db.empty:
@@ -607,7 +610,6 @@ else:
         else:
             st.info("No invoices found.")
 
-    # ── CREATE INVOICE ──
     with tab_create:
         st.subheader("1. Invoice Details")
         inv_date = st.date_input("Date", date.today(), key="c_date")
@@ -677,7 +679,6 @@ else:
                     st.session_state.pending_items = []
                     st.rerun()
 
-    # ── SEARCH ──
     with tab_search:
         st.subheader("🔍 Search by Vehicle Number")
         sc1, sc2, sc3 = st.columns([2, 1, 1])
