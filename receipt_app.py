@@ -200,8 +200,8 @@ defaults = {
     'edit_preview_items': None,
     'edit_preview_meta':  None,
     'delete_confirm':     None,
-    'part_v':             0,   # bumped to reset create-invoice part fields
-    'ep_part_v':          0,   # bumped to reset edit-preview add-row fields
+    'part_v':             0,
+    'ep_part_v':          0,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -217,7 +217,6 @@ def load_db():
         df = conn.read(ttl=0)
         if df.empty: return df
         df = sanitise_df(df)
-        # Normalise mechanic column
         if 'Mechanic_Name' in df.columns and 'Mechanic_Names' not in df.columns:
             df['Mechanic_Names'] = df['Mechanic_Name']
         if 'Invoice_No' in df.columns:
@@ -239,7 +238,7 @@ if not df_db.empty and 'Invoice_No' in df_db.columns:
     st.session_state.next_invoice_no = int(last) + 1 if pd.notna(last) else 1
 
 # ─────────────────────────────────────────────
-# 4. PARTS SUGGESTION LIST (from all past invoices)
+# 4. PARTS SUGGESTION LIST
 # ─────────────────────────────────────────────
 def get_parts_list(df_invoices):
     parts = set()
@@ -312,11 +311,10 @@ def save_updated_invoice(original_inv_no, updated_row: dict):
         st.error(f"Error saving: {e}")
 
 # ─────────────────────────────────────────────
-# 6. SHARED TOTALS WIDGET (Subtotal / Discount / Net)
+# 6. SHARED TOTALS WIDGET
 # ─────────────────────────────────────────────
 def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
                   labour_key="labour", discount_key="discount"):
-    """Renders Subtotal row, Labour, Discount and Net Total box. Returns (labour, discount, net)."""
     st.markdown("""
     <style>
     .totals-box{background:#1a1a2e;border:1px solid #2e4057;border-radius:8px;
@@ -357,32 +355,42 @@ def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
     return labour, discount, net_total
 
 # ─────────────────────────────────────────────
-# 7. PARTS INPUT WIDGET — single merged field using editable selectbox behavior
+# 7. FIXED PARTS INPUT WIDGET — Hybrid Search & Custom Typing Box
 # ─────────────────────────────────────────────
 def parts_input_widget(prefix="c"):
     """
-    A single input box using st.selectbox where users can search past parts OR
-    just type a completely brand new item directly.
+    A single robust selector that offers existing items from your data history, 
+    but lets you type a brand new item cleanly if it doesn't exist yet.
     """
     v_key = "part_v" if prefix == "c" else "ep_part_v"
     v = st.session_state[v_key]
 
     p1, p2, p3, p4 = st.columns([3, 1, 1, 1])
     with p1:
-        st.markdown("**Description** *(Type to search or enter a new part)*")
+        st.markdown("**Description** *(Search history or choose 'Write Custom' to type)*")
         
-        # Check if the user typed something custom using streamlits query/search sync
-        # By setting dynamic list options, users can write anything they want!
-        desc = st.selectbox(
-            "Part Description",
-            options=[""] + ALL_PARTS,
-            key=f"{prefix}_desc_select_{v}",
-            label_visibility="collapsed",
-            no_selection_label="Type to search or write custom..."
+        # Setup a clean list options layout with no weird experimental kwargs
+        options = ["🔍 Select existing part...", "✍️ [WRITE CUSTOM NEW PART]"] + ALL_PARTS
+        selection = st.selectbox(
+            "Part Selection",
+            options=options,
+            index=0,
+            key=f"{prefix}_select_{v}",
+            label_visibility="collapsed"
         )
         
-        # If user picked a past item, ensure it's normalized text
-        desc_str = str(desc).upper().strip() if desc else ""
+        # If they explicitly chose to write a brand new item, show text input field cleanly inline
+        if selection == "✍️ [WRITE CUSTOM NEW PART]":
+            desc_str = st.text_input(
+                "Type New Part Name", 
+                placeholder="Type new description here...",
+                key=f"{prefix}_custom_text_{v}",
+                label_visibility="collapsed"
+            ).upper().strip()
+        elif selection == "🔍 Select existing part...":
+            desc_str = ""
+        else:
+            desc_str = str(selection).upper().strip()
 
     with p2:
         st.markdown("**Qty**")
@@ -398,7 +406,7 @@ def parts_input_widget(prefix="c"):
 
     if add_clicked:
         if not desc_str:
-            st.warning("Enter or select a description first.")
+            st.warning("Please choose a past part or type out a new custom description name.")
             return False
         result = {"Description": desc_str, "Qty": int(qty), "Rate": float(rate), "Amount": int(qty) * float(rate)}
         st.session_state[v_key] += 1
@@ -409,7 +417,6 @@ def parts_input_widget(prefix="c"):
 # 8. EDITABLE INLINE PARTS TABLE
 # ─────────────────────────────────────────────
 def editable_parts_table(items_list, key_prefix="t", inv_no=""):
-    """Render items_list as editable rows. Returns (updated_list, delete_triggered)."""
     if not items_list:
         st.caption("No parts yet.")
         return items_list, False
@@ -422,7 +429,6 @@ def editable_parts_table(items_list, key_prefix="t", inv_no=""):
     updated = []
     for i, item in enumerate(items_list):
         c1, c2, c3, c4, c5 = st.columns([3.5, 1, 1.2, 1.2, 0.5])
-        
         suffix = f"{inv_no}_{i}" if inv_no else str(i)
         
         nd = c1.text_input("", value=str(item.get('Description','')),
