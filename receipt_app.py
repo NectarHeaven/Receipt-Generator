@@ -239,7 +239,7 @@ if not df_db.empty and 'Invoice_No' in df_db.columns:
     st.session_state.next_invoice_no = int(last) + 1 if pd.notna(last) else 1
 
 # ─────────────────────────────────────────────
-# 4. PARTS SUGGESTION LIST  (from all past invoices)
+# 4. PARTS SUGGESTION LIST (from all past invoices)
 # ─────────────────────────────────────────────
 def get_parts_list(df_invoices):
     parts = set()
@@ -312,7 +312,7 @@ def save_updated_invoice(original_inv_no, updated_row: dict):
         st.error(f"Error saving: {e}")
 
 # ─────────────────────────────────────────────
-# 6. SHARED TOTALS WIDGET  (Subtotal / Discount / Net)
+# 6. SHARED TOTALS WIDGET (Subtotal / Discount / Net)
 # ─────────────────────────────────────────────
 def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
                   labour_key="labour", discount_key="discount"):
@@ -357,42 +357,26 @@ def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
     return labour, discount, net_total
 
 # ─────────────────────────────────────────────
-# 7. PARTS INPUT WIDGET  — single merged field with suggestions + auto-reset
+# 7. PARTS INPUT WIDGET — single merged field with suggestions + auto-reset
 # ─────────────────────────────────────────────
 def parts_input_widget(prefix="c"):
     """
-    One selectbox that is both searchable (Streamlit renders it with a search bar)
-    and shows all past parts as options. User can also type a brand-new name.
-    After ➕ Add Part the fields reset via a version counter in session state.
-
-    Returns a dict {"Description":…} on success, False otherwise.
+    A single text input field that uses past parts as live autocomplete suggestions.
+    Users can type completely new parts directly into this exact same box.
     """
     v_key = "part_v" if prefix == "c" else "ep_part_v"
     v = st.session_state[v_key]
 
-    OPTIONS = [""] + ALL_PARTS   # first blank = "type new"
-
     p1, p2, p3, p4 = st.columns([3, 1, 1, 1])
     with p1:
-        st.markdown("**Description** *(type to search past parts, or enter new)*")
-        chosen = st.selectbox(
-            "desc",
-            options=OPTIONS,
-            index=0,
-            key=f"{prefix}_pick_{v}",
+        st.markdown("**Description** *(Type to search past parts or enter a new one)*")
+        desc = st.text_input(
+            "Part Description",
+            key=f"{prefix}_desc_input_{v}",
+            placeholder="e.g., ENGINE OIL, SPARK PLUG, BRAKE PAD...",
             label_visibility="collapsed",
-            placeholder="ENGINE OIL, SPARK PLUG, SERVICE …",
-        )
-        if chosen == "":
-            desc = st.text_input(
-                "New part name",
-                key=f"{prefix}_custom_{v}",
-                placeholder="Type new part name here…",
-                label_visibility="collapsed",
-            ).upper().strip()
-        else:
-            desc = chosen  # already uppercase from ALL_PARTS
-            st.caption(f"Selected: **{desc}**")
+            autocomplete=ALL_PARTS
+        ).upper().strip()
 
     with p2:
         st.markdown("**Qty**")
@@ -433,7 +417,6 @@ def editable_parts_table(items_list, key_prefix="t", inv_no=""):
     for i, item in enumerate(items_list):
         c1, c2, c3, c4, c5 = st.columns([3.5, 1, 1.2, 1.2, 0.5])
         
-        # Injected dynamic unique widget key context tracking
         suffix = f"{inv_no}_{i}" if inv_no else str(i)
         
         nd = c1.text_input("", value=str(item.get('Description','')),
@@ -491,7 +474,6 @@ def display_interactive_rows(df, prefix=""):
 def show_edit_preview():
     data  = st.session_state.view_invoice
 
-    # Init buffers
     if st.session_state.edit_preview_meta is None:
         st.session_state.edit_preview_meta = {
             'Customer_Name':  str(data.get('Customer_Name', '')),
@@ -516,7 +498,6 @@ def show_edit_preview():
         unsafe_allow_html=True)
     st.divider()
 
-    # Header fields
     c1, c2, c3 = st.columns(3)
     with c1:
         meta['Customer_Name'] = st.text_input("Customer Name", value=meta['Customer_Name'], key="ep_cust").upper()
@@ -532,12 +513,10 @@ def show_edit_preview():
     st.divider()
     st.markdown("#### 🔧 Parts / Services")
 
-    # Fixed key prefix implementation
     items, deleted = editable_parts_table(items, key_prefix="ep", inv_no=str(data.get('Invoice_No')))
     st.session_state.edit_preview_items = items
     if deleted: st.rerun()
 
-    # Add new row to existing invoice
     st.markdown("**➕ Add a part to this invoice**")
     result = parts_input_widget(prefix="ep")
     if result:
@@ -555,7 +534,6 @@ def show_edit_preview():
         discount_key = "ep_discount",
     )
 
-    # Action buttons
     act1, act2, act3 = st.columns(3)
     if act1.button("💾 Save All Changes", type="primary", use_container_width=True):
         row = build_row_dict(
@@ -593,7 +571,6 @@ if st.session_state.view_invoice:
     show_edit_preview()
 
 else:
-    # Delete confirmation overlay
     if st.session_state.delete_confirm is not None:
         inv = st.session_state.delete_confirm
         st.error("### ⚠️ Permanent Deletion Warning")
@@ -608,7 +585,6 @@ else:
     tab_dash, tab_create, tab_search = st.tabs(
         ["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"])
 
-    # ── DASHBOARD ──
     with tab_dash:
         st.subheader("Last 10 Invoices")
         if not df_db.empty:
@@ -617,7 +593,6 @@ else:
         else:
             st.info("No invoices found.")
 
-    # ── CREATE INVOICE ──
     with tab_create:
         st.subheader("1. Invoice Details")
         inv_date = st.date_input("Date", date.today(), key="c_date")
@@ -649,7 +624,6 @@ else:
 
         if st.session_state.pending_items:
             st.markdown("**Parts Added — edit inline or delete:**")
-            # Fixed key prefix implementation
             st.session_state.pending_items, deleted = editable_parts_table(
                 st.session_state.pending_items, key_prefix="pi", inv_no="pending")
             if deleted: st.rerun()
@@ -679,7 +653,6 @@ else:
                     conn.update(worksheet="Sheet1", data=updated_df)
 
                     resolved = new_row.copy(); resolved['Invoice_Date'] = inv_date
-                    # Ensure uncompressed version stays available for the preview parser
                     resolved['Items_JSON'] = st.session_state.pending_items
                     
                     st.session_state.view_invoice       = resolved
@@ -690,7 +663,6 @@ else:
                     st.session_state.pending_items = []
                     st.rerun()
 
-    # ── SEARCH ──
     with tab_search:
         st.subheader("🔍 Search by Vehicle Number")
         sc1, sc2, sc3 = st.columns([2, 1, 1])
@@ -722,5 +694,4 @@ else:
                     m2.metric("Total Revenue", f"₹{df_s['Net_Total'].astype(float).sum():,.2f}")
                     m3.metric("Date Range",    f"{date_from} → {date_to}")
                     st.divider()
-                    # Prefix assigned to prevent query component overlap
                     display_interactive_rows(df_s, prefix="search")
