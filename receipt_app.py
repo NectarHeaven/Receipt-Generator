@@ -197,11 +197,11 @@ defaults = {
     'pending_items':      [],
     'next_invoice_no':    1,
     'view_invoice':       None,
-    'part_qty':           None,
-    'part_rate':          None,
     'edit_preview_items': None,
     'edit_preview_meta':  None,
     'delete_confirm':     None,
+    'part_v':             0,   # bumped to reset create-invoice part fields
+    'ep_part_v':          0,   # bumped to reset edit-preview add-row fields
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -357,46 +357,66 @@ def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
     return labour, discount, net_total
 
 # ─────────────────────────────────────────────
-# 7. PARTS INPUT WIDGET  (single field with autocomplete)
+# 7. PARTS INPUT WIDGET  — single merged field with suggestions + auto-reset
 # ─────────────────────────────────────────────
 def parts_input_widget(prefix="c"):
     """
-    Single description text-input backed by a datalist of past parts,
-    plus Qty / Rate / ➕ Add.  Returns True if a part was added.
+    One selectbox that is both searchable (Streamlit renders it with a search bar)
+    and shows all past parts as options. User can also type a brand-new name.
+    After ➕ Add Part the fields reset via a version counter in session state.
+
+    Returns a dict {"Description":…} on success, False otherwise.
     """
-    parts_html = "".join(f'<option value="{p}">' for p in ALL_PARTS)
-    st.markdown(f'<datalist id="parts_dl">{parts_html}</datalist>', unsafe_allow_html=True)
+    # Version counter key — determines widget keys so bumping it forces fresh widgets
+    v_key = "part_v" if prefix == "c" else "ep_part_v"
+    v = st.session_state[v_key]
+
+    OPTIONS = [""] + ALL_PARTS   # first blank = "type new"
 
     p1, p2, p3, p4 = st.columns([3, 1, 1, 1])
     with p1:
-        st.markdown("**Description** *(start typing — past parts appear)*")
-        desc = st.text_input("desc", key=f"{prefix}_desc",
-                             placeholder="e.g. ENGINE OIL, SPARK PLUG …",
-                             label_visibility="collapsed").upper().strip()
-        # Streamlit can't inject list= attr natively; show a selectbox fallback below
-        if ALL_PARTS:
-            chosen = st.selectbox("Or pick from past parts", [""] + ALL_PARTS,
-                                  key=f"{prefix}_pick", label_visibility="collapsed")
-            if chosen:
-                desc = chosen  # override text with selection
+        st.markdown("**Description** *(type to search past parts, or enter new)*")
+        # Selectbox is natively searchable in Streamlit — user types, list filters
+        chosen = st.selectbox(
+            "desc",
+            options=OPTIONS,
+            index=0,
+            key=f"{prefix}_pick_{v}",
+            label_visibility="collapsed",
+            placeholder="ENGINE OIL, SPARK PLUG, SERVICE …",
+        )
+        # If nothing matched from suggestions, let them type freely
+        if chosen == "":
+            desc = st.text_input(
+                "New part name",
+                key=f"{prefix}_custom_{v}",
+                placeholder="Type new part name here…",
+                label_visibility="collapsed",
+            ).upper().strip()
+        else:
+            desc = chosen  # already uppercase from ALL_PARTS
+            st.caption(f"Selected: **{desc}**")
+
     with p2:
         st.markdown("**Qty**")
         qty = st.number_input("qty", min_value=1, step=1, value=1,
-                              key=f"{prefix}_qty", label_visibility="collapsed")
+                              key=f"{prefix}_qty_{v}", label_visibility="collapsed")
     with p3:
         st.markdown("**Rate (₹)**")
         rate = st.number_input("rate", min_value=0.0, step=1.0, value=0.0,
-                               key=f"{prefix}_rate", label_visibility="collapsed")
+                               key=f"{prefix}_rate_{v}", label_visibility="collapsed")
     with p4:
         st.write(""); st.write("")
-        add_clicked = st.button("➕ Add Part", key=f"{prefix}_add", use_container_width=True)
+        add_clicked = st.button("➕ Add Part", key=f"{prefix}_add_{v}", use_container_width=True)
 
     if add_clicked:
         if not desc:
-            st.warning("Enter a description first.")
+            st.warning("Enter or select a description first.")
             return False
-        amt = qty * rate
-        return {"Description": desc, "Qty": qty, "Rate": rate, "Amount": amt}
+        result = {"Description": desc, "Qty": int(qty), "Rate": float(rate), "Amount": int(qty) * float(rate)}
+        # Bump version → all widget keys change → fields render empty next run
+        st.session_state[v_key] += 1
+        return result
     return False
 
 # ─────────────────────────────────────────────
@@ -519,7 +539,7 @@ def show_edit_preview():
 
     # Add new row to existing invoice
     st.markdown("**➕ Add a part to this invoice**")
-    result = parts_input_widget(prefix="ep_new")
+    result = parts_input_widget(prefix="ep")
     if result:
         items.append(result)
         st.session_state.edit_preview_items = items
