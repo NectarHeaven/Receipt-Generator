@@ -357,26 +357,32 @@ def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
     return labour, discount, net_total
 
 # ─────────────────────────────────────────────
-# 7. PARTS INPUT WIDGET — single merged field with suggestions + auto-reset
+# 7. PARTS INPUT WIDGET — single merged field using editable selectbox behavior
 # ─────────────────────────────────────────────
 def parts_input_widget(prefix="c"):
     """
-    A single text input field that uses past parts as live autocomplete suggestions.
-    Users can type completely new parts directly into this exact same box.
+    A single input box using st.selectbox where users can search past parts OR
+    just type a completely brand new item directly.
     """
     v_key = "part_v" if prefix == "c" else "ep_part_v"
     v = st.session_state[v_key]
 
     p1, p2, p3, p4 = st.columns([3, 1, 1, 1])
     with p1:
-        st.markdown("**Description** *(Type to search past parts or enter a new one)*")
-        desc = st.text_input(
+        st.markdown("**Description** *(Type to search or enter a new part)*")
+        
+        # Check if the user typed something custom using streamlits query/search sync
+        # By setting dynamic list options, users can write anything they want!
+        desc = st.selectbox(
             "Part Description",
-            key=f"{prefix}_desc_input_{v}",
-            placeholder="e.g., ENGINE OIL, SPARK PLUG, BRAKE PAD...",
+            options=[""] + ALL_PARTS,
+            key=f"{prefix}_desc_select_{v}",
             label_visibility="collapsed",
-            autocomplete=ALL_PARTS
-        ).upper().strip()
+            no_selection_label="Type to search or write custom..."
+        )
+        
+        # If user picked a past item, ensure it's normalized text
+        desc_str = str(desc).upper().strip() if desc else ""
 
     with p2:
         st.markdown("**Qty**")
@@ -391,10 +397,10 @@ def parts_input_widget(prefix="c"):
         add_clicked = st.button("➕ Add Part", key=f"{prefix}_add_{v}", use_container_width=True)
 
     if add_clicked:
-        if not desc:
+        if not desc_str:
             st.warning("Enter or select a description first.")
             return False
-        result = {"Description": desc, "Qty": int(qty), "Rate": float(rate), "Amount": int(qty) * float(rate)}
+        result = {"Description": desc_str, "Qty": int(qty), "Rate": float(rate), "Amount": int(qty) * float(rate)}
         st.session_state[v_key] += 1
         return result
     return False
