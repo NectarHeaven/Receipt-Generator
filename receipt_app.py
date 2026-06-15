@@ -122,16 +122,20 @@ class ReceiptPDF(FPDF):
     def add_table_headers(self):
         self.set_xy(10, 54); self.set_font("helvetica", "B", 9)
         self.cell(10, 8, "SNo.", align="C")
-        self.cell(100, 8, "PRODUCT / SERVICE NAME", align="L")
-        self.cell(20, 8, "QTY",    align="C")
-        self.cell(25, 8, "RATE",   align="C")
-        self.cell(35, 8, "AMOUNT", align="R")
+        self.cell(90, 8, "PRODUCT / SERVICE NAME", align="L")
+        self.cell(15, 8, "QTY",    align="C")
+        self.cell(25, 8, "MRP",   align="C")
+        self.cell(25, 8, "DISC (%)", align="C")
+        self.cell(25, 8, "AMOUNT", align="R")
         self.ln(8); self.line(10, 62, 200, 62)
 
     def draw_grid_lines(self, is_last_page=True):
         y = 240 if is_last_page else 264
-        self.line(20,  54, 20,  y);   self.line(120, 54, 120, 264)
-        self.line(140, 54, 140, y);   self.line(165, 54, 165, 264)
+        self.line(20,  54, 20,  y)   # After SNo
+        self.line(110, 54, 110, 264) # After Description
+        self.line(125, 54, 125, y)   # After Qty
+        self.line(150, 54, 150, 264) # After MRP
+        self.line(175, 54, 175, y)   # After Disc
 
     def add_footer_totals(self, d):
         self.line(10, 240, 200, 240)
@@ -148,7 +152,6 @@ class ReceiptPDF(FPDF):
         rows = [
             ("SUBTOTAL",     float(d.get('GR_Total', 0))),
             ("LABOUR CHRGS", float(d.get('Labour_Charges', 0))),
-            ("DISCOUNT",    -float(d.get('Discount', 0))),
         ]
         y = 240
         for label, val in rows:
@@ -173,18 +176,21 @@ def generate_pdf(data):
         if not isinstance(item, dict): continue
         desc   = str(item.get('Description', item.get('DESCRIPTION', '')))
         qty    = str(item.get('Qty',    item.get('QTY',    '')))
-        rate   = float(item.get('Rate',   item.get('RATE',   0)))
+        mrp    = float(item.get('MRP', item.get('mrp', item.get('Rate', item.get('RATE', 0)))))
+        disc   = float(item.get('Discount_Percent', item.get('discount_percent', 0)))
         amount = float(item.get('Amount', item.get('AMOUNT', 0)))
+        
         sy = pdf.get_y()
         if sy > 230:
             pdf.draw_grid_lines(is_last_page=False); new_page()
             pdf.set_font("helvetica", "", 9); sy = pdf.get_y()
         pdf.set_xy(10, sy); pdf.cell(10, 6, str(idx+1), border=0, align="C")
-        pdf.set_xy(20, sy); pdf.multi_cell(100, 6, desc, border=0, align="L")
+        pdf.set_xy(20, sy); pdf.multi_cell(90, 6, desc, border=0, align="L")
         ey = pdf.get_y(); h = ey - sy
-        pdf.set_xy(120, sy); pdf.cell(20, h, qty,             border=0, align="C")
-        pdf.set_xy(140, sy); pdf.cell(25, h, f"{rate:.2f}",   border=0, align="C")
-        pdf.set_xy(165, sy); pdf.cell(35, h, f"{amount:.2f}", border=0, align="R")
+        pdf.set_xy(110, sy); pdf.cell(15, h, qty,             border=0, align="C")
+        pdf.set_xy(125, sy); pdf.cell(25, h, f"{mrp:.2f}",   border=0, align="C")
+        pdf.set_xy(150, sy); pdf.cell(25, h, f"{disc:.1f}%",  border=0, align="C")
+        pdf.set_xy(175, sy); pdf.cell(25, h, f"{amount:.2f}", border=0, align="R")
         pdf.set_y(ey)
     pdf.draw_grid_lines(is_last_page=True)
     pdf.add_footer_totals(data)
@@ -200,8 +206,8 @@ defaults = {
     'edit_preview_items': None,
     'edit_preview_meta':  None,
     'delete_confirm':     None,
-    'part_v':             0,   # bumped to reset create-invoice part fields
-    'ep_part_v':          0,   # bumped to reset edit-preview add-row fields
+    'part_v':             0,   
+    'ep_part_v':          0,   
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -217,7 +223,6 @@ def load_db():
         df = conn.read(ttl=0)
         if df.empty: return df
         df = sanitise_df(df)
-        # Normalise mechanic column
         if 'Mechanic_Name' in df.columns and 'Mechanic_Names' not in df.columns:
             df['Mechanic_Names'] = df['Mechanic_Name']
         if 'Invoice_No' in df.columns:
@@ -239,7 +244,7 @@ if not df_db.empty and 'Invoice_No' in df_db.columns:
     st.session_state.next_invoice_no = int(last) + 1 if pd.notna(last) else 1
 
 # ─────────────────────────────────────────────
-# 4. PARTS SUGGESTION LIST  (from all past invoices)
+# 4. PARTS SUGGESTION LIST
 # ─────────────────────────────────────────────
 def get_parts_list(df_invoices):
     parts = set()
@@ -275,7 +280,7 @@ def build_row_dict(inv_no, inv_date, cust, contact, veh, veh_name,
         "Total_Items_Count": int(len(items)),
         "GR_Total":          round(float(gr_total),   2),
         "Labour_Charges":    round(float(labour),     2),
-        "Discount":          round(float(discount),   2),
+        "Discount":          round(float(discount),   2), # Remains for table compatibility schema
         "Net_Total":         round(float(net_total),  2),
     }
 
@@ -312,11 +317,10 @@ def save_updated_invoice(original_inv_no, updated_row: dict):
         st.error(f"Error saving: {e}")
 
 # ─────────────────────────────────────────────
-# 6. SHARED TOTALS WIDGET  (Subtotal / Discount / Net)
+# 6. SHARED TOTALS WIDGET (Global Discount Removed)
 # ─────────────────────────────────────────────
-def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
-                  labour_key="labour", discount_key="discount"):
-    """Renders Subtotal row, Labour, Discount and Net Total box. Returns (labour, discount, net)."""
+def totals_widget(gr_total, default_labour=0.0, labour_key="labour"):
+    """Renders Subtotal row, Labour and Net Total box."""
     st.markdown("""
     <style>
     .totals-box{background:#1a1a2e;border:1px solid #2e4057;border-radius:8px;
@@ -326,83 +330,66 @@ def totals_widget(gr_total, default_labour=0.0, default_discount=0.0,
     .tot-row:last-child{border-bottom:none;}
     .tot-label{color:#b0bec5;}
     .tot-val{font-family:monospace;color:#e8eff5;}
-    .tot-discount{color:#ef4444;}
     .tot-net{font-size:18px;font-weight:700;color:#ff6b2b;}
     </style>""", unsafe_allow_html=True)
 
     c1, c2 = st.columns([2, 1])
     with c1:
-        labour   = st.number_input("Labour Charges (₹)", min_value=0.0, step=10.0,
+        labour = st.number_input("Labour Charges (₹)", min_value=0.0, step=10.0,
                                    value=float(default_labour), key=labour_key)
-        discount = st.number_input("Discount (₹)", min_value=0.0, step=10.0,
-                                   value=float(default_discount), key=discount_key)
     with c2:
-        subtotal  = gr_total + labour
-        net_total = max(0.0, subtotal - discount)
+        net_total = gr_total + labour
         st.markdown(f"""
         <div class="totals-box">
           <div class="tot-row">
-            <span class="tot-label">Subtotal</span>
-            <span class="tot-val">₹{subtotal:,.2f}</span>
+            <span class="tot-label">Items Total</span>
+            <span class="tot-val">₹{gr_total:,.2f}</span>
           </div>
           <div class="tot-row">
-            <span class="tot-label">Discount</span>
-            <span class="tot-discount">−₹{discount:,.2f}</span>
+            <span class="tot-label">Labour Charges</span>
+            <span class="tot-val">₹{labour:,.2f}</span>
           </div>
           <div class="tot-row">
             <span class="tot-net">Net Total</span>
             <span class="tot-net">₹{net_total:,.2f}</span>
           </div>
         </div>""", unsafe_allow_html=True)
-    return labour, discount, net_total
+    return labour, 0.0, net_total
 
 # ─────────────────────────────────────────────
-# 7. PARTS INPUT WIDGET  — single merged field with suggestions + auto-reset
+# 7. PARTS INPUT WIDGET
 # ─────────────────────────────────────────────
 def parts_input_widget(prefix="c"):
-    """
-    One selectbox that is both searchable (Streamlit renders it with a search bar)
-    and shows all past parts as options. User can also type a brand-new name.
-    After ➕ Add Part the fields reset via a version counter in session state.
-
-    Returns a dict {"Description":…} on success, False otherwise.
-    """
+    """Returns a dict {"Description":…, "Qty":…, "MRP":…, "Discount_Percent":…, "Amount":…}"""
     v_key = "part_v" if prefix == "c" else "ep_part_v"
     v = st.session_state[v_key]
 
-    OPTIONS = [""] + ALL_PARTS   # first blank = "type new"
+    OPTIONS = [""] + ALL_PARTS   
 
-    p1, p2, p3, p4 = st.columns([3, 1, 1, 1])
+    p1, p2, p3, p4, p5 = st.columns([2.5, 0.8, 1.1, 1.1, 1.1])
     with p1:
-        st.markdown("**Description** *(type to search past parts, or enter new)*")
+        st.markdown("**Description**")
         chosen = st.selectbox(
-            "desc",
-            options=OPTIONS,
-            index=0,
-            key=f"{prefix}_pick_{v}",
-            label_visibility="collapsed",
-            placeholder="ENGINE OIL, SPARK PLUG, SERVICE …",
+            "desc", options=OPTIONS, index=0, key=f"{prefix}_pick_{v}",
+            label_visibility="collapsed", placeholder="ENGINE OIL, SPARK PLUG..."
         )
         if chosen == "":
-            desc = st.text_input(
-                "New part name",
-                key=f"{prefix}_custom_{v}",
-                placeholder="Type new part name here…",
-                label_visibility="collapsed",
-            ).upper().strip()
+            desc = st.text_input("New part name", key=f"{prefix}_custom_{v}",
+                                 placeholder="Type new part...", label_visibility="collapsed").upper().strip()
         else:
-            desc = chosen  # already uppercase from ALL_PARTS
+            desc = chosen  
             st.caption(f"Selected: **{desc}**")
 
     with p2:
         st.markdown("**Qty**")
-        qty = st.number_input("qty", min_value=1, step=1, value=1,
-                              key=f"{prefix}_qty_{v}", label_visibility="collapsed")
+        qty = st.number_input("qty", min_value=1, step=1, value=1, key=f"{prefix}_qty_{v}", label_visibility="collapsed")
     with p3:
-        st.markdown("**Rate (₹)**")
-        rate = st.number_input("rate", min_value=0.0, step=1.0, value=0.0,
-                               key=f"{prefix}_rate_{v}", label_visibility="collapsed")
+        st.markdown("**MRP (₹)**")
+        mrp = st.number_input("mrp", min_value=0.0, step=1.0, value=0.0, key=f"{prefix}_mrp_{v}", label_visibility="collapsed")
     with p4:
+        st.markdown("**Discount (%)**")
+        disc_p = st.number_input("disc_p", min_value=0.0, max_value=100.0, step=0.5, value=0.0, key=f"{prefix}_disc_{v}", label_visibility="collapsed")
+    with p5:
         st.write(""); st.write("")
         add_clicked = st.button("➕ Add Part", key=f"{prefix}_add_{v}", use_container_width=True)
 
@@ -410,7 +397,18 @@ def parts_input_widget(prefix="c"):
         if not desc:
             st.warning("Enter or select a description first.")
             return False
-        result = {"Description": desc, "Qty": int(qty), "Rate": float(rate), "Amount": int(qty) * float(rate)}
+        
+        # Calculate amount with inline % discount auto-applied
+        base_amt = int(qty) * float(mrp)
+        final_amt = base_amt * (1.0 - (float(disc_p) / 100.0))
+        
+        result = {
+            "Description": desc, 
+            "Qty": int(qty), 
+            "MRP": float(mrp), 
+            "Discount_Percent": float(disc_p), 
+            "Amount": round(final_amt, 2)
+        }
         st.session_state[v_key] += 1
         return result
     return False
@@ -419,36 +417,37 @@ def parts_input_widget(prefix="c"):
 # 8. EDITABLE INLINE PARTS TABLE
 # ─────────────────────────────────────────────
 def editable_parts_table(items_list, key_prefix="t", inv_no=""):
-    """Render items_list as editable rows. Returns (updated_list, delete_triggered)."""
     if not items_list:
         st.caption("No parts yet.")
         return items_list, False
 
-    hc = st.columns([3.5, 1, 1.2, 1.2, 0.5])
-    for lbl, col in zip(["**Description**","**Qty**","**Rate (₹)**","**Amt (₹)**",""], hc):
+    hc = st.columns([2.5, 0.8, 1.2, 1.2, 1.2, 0.5])
+    for lbl, col in zip(["**Description**","**Qty**","**MRP (₹)**","**Discount (%)**","**Amt (₹)**",""], hc):
         col.markdown(lbl)
 
     to_del = None
     updated = []
     for i, item in enumerate(items_list):
-        c1, c2, c3, c4, c5 = st.columns([3.5, 1, 1.2, 1.2, 0.5])
-        
-        # Injected dynamic unique widget key context tracking
+        c1, c2, c3, c4, c5, c6 = st.columns([2.5, 0.8, 1.2, 1.2, 1.2, 0.5])
         suffix = f"{inv_no}_{i}" if inv_no else str(i)
         
-        nd = c1.text_input("", value=str(item.get('Description','')),
-                            key=f"{key_prefix}_desc_{suffix}",
-                            label_visibility="collapsed").upper()
-        nq = c2.number_input("", value=int(item.get('Qty',1)), min_value=1,
-                              key=f"{key_prefix}_qty_{suffix}", label_visibility="collapsed")
-        nr = c3.number_input("", value=float(item.get('Rate',0)), min_value=0.0, step=1.0,
-                              key=f"{key_prefix}_rate_{suffix}", label_visibility="collapsed")
-        na = nq * nr
-        c4.markdown(f"<div style='padding-top:32px;font-family:monospace;'>₹{na:.2f}</div>",
-                    unsafe_allow_html=True)
-        if c5.button("🗑", key=f"{key_prefix}_del_{suffix}"):
+        nd = c1.text_input("", value=str(item.get('Description','')), key=f"{key_prefix}_desc_{suffix}", label_visibility="collapsed").upper()
+        nq = c2.number_input("", value=int(item.get('Qty',1)), min_value=1, key=f"{key_prefix}_qty_{suffix}", label_visibility="collapsed")
+        
+        # Pulling existing key values if structural changes occurred
+        current_mrp = float(item.get('MRP', item.get('mrp', item.get('Rate', item.get('RATE', 0)))))
+        nm = c3.number_input("", value=current_mrp, min_value=0.0, step=1.0, key=f"{key_prefix}_mrp_{suffix}", label_visibility="collapsed")
+        
+        current_disc = float(item.get('Discount_Percent', item.get('discount_percent', 0)))
+        ndisc = c4.number_input("", value=current_disc, min_value=0.0, max_value=100.0, step=0.5, key=f"{key_prefix}_disc_{suffix}", label_visibility="collapsed")
+        
+        # Recalculate Row Amount dynamically
+        na = round((nq * nm) * (1.0 - (ndisc / 100.0)), 2)
+        
+        c5.markdown(f"<div style='padding-top:6px;font-family:monospace;'>₹{na:.2f}</div>", unsafe_allow_html=True)
+        if c6.button("🗑", key=f"{key_prefix}_del_{suffix}"):
             to_del = i
-        updated.append({'Description': nd, 'Qty': nq, 'Rate': nr, 'Amount': na})
+        updated.append({'Description': nd, 'Qty': nq, 'MRP': nm, 'Discount_Percent': ndisc, 'Amount': na})
 
     if to_del is not None:
         updated.pop(to_del)
@@ -460,8 +459,7 @@ def editable_parts_table(items_list, key_prefix="t", inv_no=""):
 # ─────────────────────────────────────────────
 def display_interactive_rows(df, prefix=""):
     h1, h2, h3, h4, h5 = st.columns([1, 1.5, 3, 1.5, 3.5])
-    for lbl, col in zip(["**Inv**","**Date**","**Customer**","**Net Total**","**Actions**"],
-                        [h1,h2,h3,h4,h5]):
+    for lbl, col in zip(["**Inv**","**Date**","**Customer**","**Net Total**","**Actions**"], [h1,h2,h3,h4,h5]):
         col.markdown(lbl)
     st.divider()
     for idx, row in df.iterrows():
@@ -491,7 +489,6 @@ def display_interactive_rows(df, prefix=""):
 def show_edit_preview():
     data  = st.session_state.view_invoice
 
-    # Init buffers
     if st.session_state.edit_preview_meta is None:
         st.session_state.edit_preview_meta = {
             'Customer_Name':  str(data.get('Customer_Name', '')),
@@ -516,7 +513,6 @@ def show_edit_preview():
         unsafe_allow_html=True)
     st.divider()
 
-    # Header fields
     c1, c2, c3 = st.columns(3)
     with c1:
         meta['Customer_Name'] = st.text_input("Customer Name", value=meta['Customer_Name'], key="ep_cust").upper()
@@ -532,12 +528,10 @@ def show_edit_preview():
     st.divider()
     st.markdown("#### 🔧 Parts / Services")
 
-    # Fixed key prefix implementation
     items, deleted = editable_parts_table(items, key_prefix="ep", inv_no=str(data.get('Invoice_No')))
     st.session_state.edit_preview_items = items
     if deleted: st.rerun()
 
-    # Add new row to existing invoice
     st.markdown("**➕ Add a part to this invoice**")
     result = parts_input_widget(prefix="ep")
     if result:
@@ -547,15 +541,12 @@ def show_edit_preview():
 
     st.divider()
     gr_total = sum(float(it.get('Amount', 0)) for it in items)
-    labour, discount, net_total = totals_widget(
+    labour, _, net_total = totals_widget(
         gr_total,
-        default_labour   = float(data.get('Labour_Charges', 0)),
-        default_discount = float(data.get('Discount', 0)),
-        labour_key   = "ep_labour",
-        discount_key = "ep_discount",
+        default_labour = float(data.get('Labour_Charges', 0)),
+        labour_key     = "ep_labour"
     )
 
-    # Action buttons
     act1, act2, act3 = st.columns(3)
     if act1.button("💾 Save All Changes", type="primary", use_container_width=True):
         row = build_row_dict(
@@ -563,7 +554,7 @@ def show_edit_preview():
             meta['Customer_Name'], meta['Contact_No'],
             meta['Vehicle_No'],    meta['Vehicle_Name'],
             meta['Total_KMs'],     meta['Mechanic_Names'],
-            items, gr_total, labour, discount, net_total
+            items, gr_total, labour, 0.0, net_total
         )
         save_updated_invoice(int(data.get('Invoice_No')), row)
 
@@ -573,7 +564,7 @@ def show_edit_preview():
         'Items_JSON': json.dumps(items),
         'Total_Items_Count': len(items),
         'GR_Total': gr_total, 'Labour_Charges': labour,
-        'Discount': discount,  'Net_Total': net_total,
+        'Discount': 0.0,  'Net_Total': net_total,
         'Mechanic_Names': meta['Mechanic_Names'],
     }
     act2.download_button("📥 Download PDF", data=generate_pdf(pdf_data),
@@ -593,7 +584,6 @@ if st.session_state.view_invoice:
     show_edit_preview()
 
 else:
-    # Delete confirmation overlay
     if st.session_state.delete_confirm is not None:
         inv = st.session_state.delete_confirm
         st.error("### ⚠️ Permanent Deletion Warning")
@@ -649,15 +639,13 @@ else:
 
         if st.session_state.pending_items:
             st.markdown("**Parts Added — edit inline or delete:**")
-            # Fixed key prefix implementation
             st.session_state.pending_items, deleted = editable_parts_table(
                 st.session_state.pending_items, key_prefix="pi", inv_no="pending")
             if deleted: st.rerun()
 
             st.divider()
             gr_total = sum(it['Amount'] for it in st.session_state.pending_items)
-            labour, discount, net_total = totals_widget(
-                gr_total, labour_key="c_labour", discount_key="c_discount")
+            labour, _, net_total = totals_widget(gr_total, labour_key="c_labour")
 
             if st.button("💾 Save & Generate Invoice", type="primary", use_container_width=True):
                 if not cust_name:
@@ -670,7 +658,7 @@ else:
                         cust_name, cust_contact, veh_no, veh_name,
                         tot_kms, mechanic,
                         st.session_state.pending_items,
-                        gr_total, labour, discount, net_total
+                        gr_total, labour, 0.0, net_total
                     )
                     fresh_df = load_db()
                     ndf = pd.DataFrame([new_row])
@@ -679,7 +667,6 @@ else:
                     conn.update(worksheet="Sheet1", data=updated_df)
 
                     resolved = new_row.copy(); resolved['Invoice_Date'] = inv_date
-                    # Ensure uncompressed version stays available for the preview parser
                     resolved['Items_JSON'] = st.session_state.pending_items
                     
                     st.session_state.view_invoice       = resolved
@@ -700,8 +687,6 @@ else:
                       if isinstance(d, date)] if not df_db.empty else []
         min_date   = min(all_dates) if all_dates else date(2020,1,1)
         date_from  = sc2.date_input("From Date", value=min_date, key="s_from")
-        
-        # ── MODIFIED VALUE TO TODAY'S DATE ──
         date_to    = sc3.date_input("To Date",   value=date.today(), key="s_to")
 
         if veh_query or st.button("Show all in date range"):
@@ -715,7 +700,6 @@ else:
                     df_s = df_s[df_s['Invoice_Date'].apply(
                         lambda d: date_from <= d <= date_to if isinstance(d, date) else False)]
                 
-                # Fixed indentation safety layer here
                 df_s = df_s.sort_values("Invoice_No", ascending=False)
                 if df_s.empty:
                     st.warning("No records found.")
@@ -725,5 +709,4 @@ else:
                     m2.metric("Total Revenue", f"₹{df_s['Net_Total'].astype(float).sum():,.2f}")
                     m3.metric("Date Range",    f"{date_from} → {date_to}")
                     st.divider()
-                    # Prefix assigned to prevent query component overlap
                     display_interactive_rows(df_s, prefix="search")
