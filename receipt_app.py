@@ -260,7 +260,7 @@ ALL_PARTS = get_parts_list(df_db)
 # 5. CRUD HELPERS
 # ─────────────────────────────────────────────
 def build_row_dict(inv_no, inv_date, cust, contact, veh, veh_name,
-                   kms, mech, items, gr_total, labour, discount, net_total):
+                    kms, mech, items, gr_total, labour, discount, net_total):
     ds = inv_date.strftime("%Y-%m-%d") if hasattr(inv_date, 'strftime') else str(inv_date)[:10]
     return {
         "Invoice_No":        int(inv_no),
@@ -367,7 +367,6 @@ def parts_input_widget(prefix="c"):
 
     Returns a dict {"Description":…} on success, False otherwise.
     """
-    # Version counter key — determines widget keys so bumping it forces fresh widgets
     v_key = "part_v" if prefix == "c" else "ep_part_v"
     v = st.session_state[v_key]
 
@@ -376,7 +375,6 @@ def parts_input_widget(prefix="c"):
     p1, p2, p3, p4 = st.columns([3, 1, 1, 1])
     with p1:
         st.markdown("**Description** *(type to search past parts, or enter new)*")
-        # Selectbox is natively searchable in Streamlit — user types, list filters
         chosen = st.selectbox(
             "desc",
             options=OPTIONS,
@@ -385,7 +383,6 @@ def parts_input_widget(prefix="c"):
             label_visibility="collapsed",
             placeholder="ENGINE OIL, SPARK PLUG, SERVICE …",
         )
-        # If nothing matched from suggestions, let them type freely
         if chosen == "":
             desc = st.text_input(
                 "New part name",
@@ -414,7 +411,6 @@ def parts_input_widget(prefix="c"):
             st.warning("Enter or select a description first.")
             return False
         result = {"Description": desc, "Qty": int(qty), "Rate": float(rate), "Amount": int(qty) * float(rate)}
-        # Bump version → all widget keys change → fields render empty next run
         st.session_state[v_key] += 1
         return result
     return False
@@ -422,7 +418,7 @@ def parts_input_widget(prefix="c"):
 # ─────────────────────────────────────────────
 # 8. EDITABLE INLINE PARTS TABLE
 # ─────────────────────────────────────────────
-def editable_parts_table(items_list, key_prefix="t"):
+def editable_parts_table(items_list, key_prefix="t", inv_no=""):
     """Render items_list as editable rows. Returns (updated_list, delete_triggered)."""
     if not items_list:
         st.caption("No parts yet.")
@@ -436,18 +432,21 @@ def editable_parts_table(items_list, key_prefix="t"):
     updated = []
     for i, item in enumerate(items_list):
         c1, c2, c3, c4, c5 = st.columns([3.5, 1, 1.2, 1.2, 0.5])
-        # Description with suggestion list
+        
+        # Injected dynamic unique widget key context tracking
+        suffix = f"{inv_no}_{i}" if inv_no else str(i)
+        
         nd = c1.text_input("", value=str(item.get('Description','')),
-                            key=f"{key_prefix}_desc_{i}",
+                            key=f"{key_prefix}_desc_{suffix}",
                             label_visibility="collapsed").upper()
         nq = c2.number_input("", value=int(item.get('Qty',1)), min_value=1,
-                              key=f"{key_prefix}_qty_{i}", label_visibility="collapsed")
+                              key=f"{key_prefix}_qty_{suffix}", label_visibility="collapsed")
         nr = c3.number_input("", value=float(item.get('Rate',0)), min_value=0.0, step=1.0,
-                              key=f"{key_prefix}_rate_{i}", label_visibility="collapsed")
+                              key=f"{key_prefix}_rate_{suffix}", label_visibility="collapsed")
         na = nq * nr
         c4.markdown(f"<div style='padding-top:32px;font-family:monospace;'>₹{na:.2f}</div>",
                     unsafe_allow_html=True)
-        if c5.button("🗑", key=f"{key_prefix}_del_{i}"):
+        if c5.button("🗑", key=f"{key_prefix}_del_{suffix}"):
             to_del = i
         updated.append({'Description': nd, 'Qty': nq, 'Rate': nr, 'Amount': na})
 
@@ -533,7 +532,8 @@ def show_edit_preview():
     st.divider()
     st.markdown("#### 🔧 Parts / Services")
 
-    items, deleted = editable_parts_table(items, key_prefix="ep")
+    # Fixed key prefix implementation
+    items, deleted = editable_parts_table(items, key_prefix="ep", inv_no=str(data.get('Invoice_No')))
     st.session_state.edit_preview_items = items
     if deleted: st.rerun()
 
@@ -649,8 +649,9 @@ else:
 
         if st.session_state.pending_items:
             st.markdown("**Parts Added — edit inline or delete:**")
+            # Fixed key prefix implementation
             st.session_state.pending_items, deleted = editable_parts_table(
-                st.session_state.pending_items, key_prefix="pi")
+                st.session_state.pending_items, key_prefix="pi", inv_no="pending")
             if deleted: st.rerun()
 
             st.divider()
@@ -678,6 +679,9 @@ else:
                     conn.update(worksheet="Sheet1", data=updated_df)
 
                     resolved = new_row.copy(); resolved['Invoice_Date'] = inv_date
+                    # Ensure uncompressed version stays available for the preview parser
+                    resolved['Items_JSON'] = st.session_state.pending_items
+                    
                     st.session_state.view_invoice       = resolved
                     st.session_state.edit_preview_items = None
                     st.session_state.edit_preview_meta  = None
@@ -718,4 +722,5 @@ else:
                     m2.metric("Total Revenue", f"₹{df_s['Net_Total'].astype(float).sum():,.2f}")
                     m3.metric("Date Range",    f"{date_from} → {date_to}")
                     st.divider()
+                    # Prefix assigned to prevent query component overlap
                     display_interactive_rows(df_s, prefix="search")
