@@ -1,372 +1,295 @@
 import streamlit as st
 import pandas as pd
-import json
-from datetime import datetime
-import streamlit.components.v1 as components
+from datetime import datetime, timedelta
+import uuid
+from streamlit_gsheets import GSheetsConnection
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="Garage Invoice System", layout="wide")
+# --- 0. PAGE CONFIG MUST BE THE VERY FIRST COMMAND ---
+st.set_page_config(page_title="Shop Ledger", layout="wide")
 
-# --- SIMULATED DATABASE / GOOGLE SHEET FUNCTIONALITY ---
-# Replace this dictionary initialization with your actual gspread/Google Sheet connection logic
-if 'invoice_db' not in st.session_state:
-    st.session_state.invoice_db = pd.DataFrame(columns=[
-        "Invoice_No", "Invoice_Date", "Customer_Name", "Contact_No", "Vehicle_No", 
-        "Vehicle_Name", "Total_KMs", "Mechanic_Names", "Items_JSON", 
-        "Total_Items_Count", "GR_Total", "Labour_Charges", "Discount", "Net_Total"
-    ])
+# --- CUSTOM CSS FOR LARGER FONTS ---
+st.markdown("""
+<style>
+    input[type="text"], input[type="number"] { font-size: 1.2rem !important; }
+    .stSelectbox label, .stTextInput label, .stNumberInput label { font-size: 1.1rem !important; font-weight: bold !important; }
+    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 { font-family: sans-serif; }
+    div[role="radiogroup"] { padding-bottom: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
-if 'current_items' not in st.session_state:
-    st.session_state.current_items = []
-
-# Mock master parts list for the autocomplete dropdown
-MASTER_PARTS = ["", "SERVICE OF VEHICLE WITH WASHING", "ENGINE OIL", "GEAR OIL", "SHOCAB BUSH", "RR BR SHOES", "YOLK PATTI"]
-
-# --- HELPER FUNCTIONS ---
-def add_item_to_list(desc, qty, mrp, disc_percent):
-    # Calculate row total based on MRP and individual item discount
-    raw_amount = qty * mrp
-    discount_amount = raw_amount * (disc_percent / 100.0)
-    final_amount = raw_amount - discount_amount
+# --- 1. GOOGLE SHEETS SETUP ---
+def get_data():
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    df = conn.read(worksheet="Sheet1", ttl=0)
     
-    item = {
-        "Description": desc.upper().strip(),
-        "Qty": int(qty),
-        "MRP": float(mrp),
-        "Discount_Percent": float(disc_percent),
-        "Amount": float(final_amount)
-    }
-    st.session_state.current_items.append(item)
-
-# --- APP TABS ---
-tab1, tab2, tab3 = st.tabs(["📊 Main Dashboard", "➕ Create Invoice", "🔍 Search Invoices"])
-
-# ==============================================================================
-# TAB 2: CREATE INVOICE (With Fixed Layout and Polished PDF/HTML Template)
-# ==============================================================================
-with tab2:
-    st.markdown("## 📄 Create New Invoice")
+    expected_columns = ['hidden_id', 'Date', 'Customer Name', 'Name', 'Qty', 'Total Price', 'Phone', 'Status']
     
-    # 1. Customer & Vehicle Details Grid
-    with st.expander("1. Customer & Vehicle Information", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            inv_no = st.text_input("Invoice No", value="103")
-            cust_name = st.text_input("Customer Name", value="MR. NITIN K")
-        with c2:
-            inv_date = st.date_input("Invoice Date", value=datetime.today())
-            contact_no = st.text_input("Contact No", value="9730813966")
-        with c3:
-            veh_no = st.text_input("Vehicle No", value="MH05FF4768")
-            veh_name = st.text_input("Vehicle Name", value="ACTIVA")
-            
-        c4, c5 = st.columns(2)
-        with c4:
-            total_kms = st.number_input("Total KMs", min_value=0, value=66664, step=1)
-        with c5:
-            mechanic_name = st.text_input("Mechanic Name", value="ASDFASDFAS")
-
-    st.markdown("---")
-
-    # 2. Add Parts Form (FIXED: Clean, Horizontal Single-Line Row Grid Layout)
-    st.markdown("### 2. Add Parts")
-    
-    col1, col2, col3, col4, col5 = st.columns([4, 3, 1, 2, 2])
-    
-    with col1:
-        selected_part = st.selectbox(
-            "Select Existing Part", 
-            options=MASTER_PARTS,
-            key="part_select"
-        )
-    with col2:
-        custom_part = st.text_input(
-            "Or Type New Part Name", 
-            placeholder="Type manually if not in list...",
-            key="part_custom"
-        )
-    with col3:
-        qty = st.number_input("Qty", min_value=1, value=1, step=1, key="part_qty")
-    with col4:
-        mrp = st.number_input("MRP / Rate (₹)", min_value=0.0, value=0.0, step=10.0, key="part_mrp")
-    with col5:
-        disc_per = st.number_input("Discount (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0, key="part_disc")
-        
-    # Single Wide button row right underneath the inputs for clear submission
-    if st.button("➕ Add Item to Invoice", use_container_width=True):
-        final_description = custom_part if custom_part.strip() != "" else selected_part
-        if final_description.strip() == "":
-            st.error("Please select or enter a valid item description.")
-        elif mrp <= 0:
-            st.error("Please enter a valid rate/MRP greater than 0.")
-        else:
-            add_item_to_list(final_description, qty, mrp, disc_per)
-            st.toast(f"Added {final_description} successfully!")
-            st.rerun()
-
-    # Table displaying items currently added to the invoice basket
-    if st.session_state.current_items:
-        st.markdown("#### Current Invoice Items")
-        df_items = pd.DataFrame(st.session_state.current_items)
-        st.dataframe(df_items, use_container_width=True)
-        if st.button("🗑️ Clear All Items"):
-            st.session_state.current_items = []
-            st.rerun()
-
-    st.markdown("---")
-
-    # 3. Totals & Calculations
-    st.markdown("### 3. Final Settlement")
-    
-    # Calculate parts subtotal dynamically
-    gr_total = sum(item["Amount"] for item in st.session_state.current_items)
-    
-    cx, cy = st.columns(2)
-    with cx:
-        labour_charges = st.number_input("Labour Charges (₹)", min_value=0.0, value=0.0, step=10.0)
-    with cy:
-        # Legacy bottom global discount is locked to 0 since item-wise discount is calculated inside items row amounts
-        st.text_input("Global Bottom Discount (₹)", value="0.00 (Disabled - Item-wise active)", disabled=True)
-        
-    net_total = gr_total + labour_charges
-    
-    st.metric(label="Final Net Total Payable", value=f"₹ {net_total:,.2f}")
-
-    # ==============================================================================
-    # PRINTABLE INVOICE TEMPLATE GENERATION (FIXED: Clean Borders, Compact Totals)
-    # ==============================================================================
-    if st.session_state.current_items:
-        # Generate dynamic clean HTML table records rows
-        table_rows_html = ""
-        for idx, item in enumerate(st.session_state.current_items, start=1):
-            table_rows_html += f"""
-            <tr>
-                <td style='text-align: center;'>{idx}</td>
-                <td>{item['Description']}</td>
-                <td style='text-align: center;'>{item['Qty']}</td>
-                <td style='text-align: right;'>{item['MRP']:.2f}</td>
-                <td style='text-align: center;'>{item['Discount_Percent']}%</td>
-                <td style='text-align: right;'>{item['Amount']:.2f}</td>
-            </tr>
-            """
-
-        # Beautiful Print Invoice Component Structure
-        invoice_template_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-            .invoice-box {{
-                max-width: 850px;
-                margin: auto;
-                padding: 25px;
-                border: 1px solid #dee2e6;
-                box-shadow: 0 0 10px rgba(0, 0, 0, 0.05);
-                font-family: 'Segoe UI', Arial, sans-serif;
-                color: #333;
-                background: #fff;
-            }}
-            .header-table {{
-                width: 100%;
-                margin-bottom: 20px;
-                border-bottom: 2px solid #333;
-                padding-bottom: 10px;
-            }}
-            .title-header {{
-                font-size: 26px;
-                font-weight: bold;
-                letter-spacing: 1px;
-            }}
-            .meta-table {{
-                width: 100%;
-                font-size: 13px;
-                margin-bottom: 20px;
-            }}
-            .meta-table td {{
-                padding: 4px 0;
-            }}
-            .items-table {{
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 14px;
-                margin-top: 10px;
-            }}
-            .items-table th {{
-                background-color: #f8f9fa;
-                color: #495057;
-                font-weight: 600;
-                padding: 10px;
-                border-top: 1px solid #dee2e6;
-                border-bottom: 2px solid #dee2e6;
-            }}
-            .items-table td {{
-                padding: 10px;
-                border-bottom: 1px solid #efefef;
-            }}
-            .summary-container {{
-                width: 100%;
-                margin-top: 20px;
-                display: inline-block;
-            }}
-            .thanks-box {{
-                float: left;
-                width: 55%;
-                margin-top: 15px;
-            }}
-            .mechanic-text {{
-                font-size: 13px;
-                font-weight: bold;
-                color: #495057;
-                text-transform: uppercase;
-            }}
-            .thanks-text {{
-                margin-top: 15px;
-                font-style: italic;
-                color: #6c757d;
-                font-size: 14px;
-                letter-spacing: 1px;
-            }}
-            .totals-table {{
-                float: right;
-                width: 40%;
-                border-top: 2px solid #333;
-                font-size: 14px;
-            }}
-            .totals-table td {{
-                padding: 7px 8px;
-                border: none !important;
-            }}
-            .text-right {{
-                text-align: right;
-            }}
-            .net-total-row {{
-                font-size: 16px;
-                font-weight: bold;
-                border-top: 1px solid #333 !important;
-                border-bottom: 2px double #333 !important;
-                background-color: #f8f9fa;
-            }}
-            @media print {{
-                .invoice-box {{ border: none; box-shadow: none; padding: 0; }}
-                body {{ background: #fff; }}
-            }}
-        </style>
-        </head>
-        <body>
-        <div class="invoice-box">
-            <table class="header-table">
-                <tr>
-                    <td class="title-header">INVOICE / BILL</td>
-                    <td style="text-align: right; font-size: 14px; color:#6c757d;">Original Copy</td>
-                </tr>
-            </table>
-
-            <table class="meta-table">
-                <tr>
-                    <td style="width:15%;"><strong>Invoice No:</strong></td>
-                    <td style="width:35%;">{inv_no}</td>
-                    <td style="width:18%;"><strong>Vehicle No:</strong></td>
-                    <td style="width:32%;">{veh_no.upper()}</td>
-                </tr>
-                <tr>
-                    <td><strong>Date:</strong></td>
-                    <td>{inv_date.strftime('%d/%m/%Y')}</td>
-                    <td><strong>Vehicle Model:</strong></td>
-                    <td>{veh_name.upper()}</td>
-                </tr>
-                <tr>
-                    <td><strong>Customer:</strong></td>
-                    <td>{cust_name.upper()}</td>
-                    <td><strong>Total KMs:</strong></td>
-                    <td>{total_kms:,} kms</td>
-                </tr>
-                <tr>
-                    <td><strong>Contact:</strong></td>
-                    <td>{contact_no}</td>
-                    <td></td>
-                    <td></td>
-                </tr>
-            </table>
-
-            <table class="items-table">
-                <thead>
-                    <tr>
-                        <th style="width: 8%; text-align: center;">SR.</th>
-                        <th style="text-align: left;">DESCRIPTION</th>
-                        <th style="width: 10%; text-align: center;">QTY</th>
-                        <th style="width: 15%; text-align: right;">RATE (₹)</th>
-                        <th style="width: 12%; text-align: center;">DISC</th>
-                        <th style="width: 18%; text-align: right;">AMOUNT (₹)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows_html}
-                </tbody>
-            </table>
-
-            <div class="summary-container">
-                <div class="thanks-box">
-                    <div class="mechanic-text">MECHANIC: {mechanic_name.upper()}</div>
-                    <div class="thanks-text">*** THANK YOU ***</div>
-                    <div style="margin-top: 25px; font-size: 11px; color: #aaa;">Page 1 of 1</div>
-                </div>
+    # Safely handle completely empty sheets
+    if df is None or df.empty or len(df.columns) == 0:
+        df = pd.DataFrame(columns=expected_columns)
+    else:
+        for col in expected_columns:
+            if col not in df.columns:
+                df[col] = None 
                 
-                <table class="totals-table">
-                    <tr>
-                        <td>TOTAL ITEMS: {len(st.session_state.current_items)}</td>
-                        <td class="text-right">SUBTOTAL</td>
-                        <td class="text-right">{gr_total:,.2f}</td>
-                    </tr>
-                    <tr>
-                        <td></td>
-                        <td class="text-right">LABOUR CHRGS</td>
-                        <td class="text-right">{labour_charges:,.2f}</td>
-                    </tr>
-                    <tr class="net-total-row">
-                        <td></td>
-                        <td class="text-right">NET TOTAL</td>
-                        <td class="text-right">₹ {net_total:,.2f}</td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-        </body>
-        </html>
-        """
+    df = df.dropna(how="all") 
+    
+    # 1. FIX THE NUMBERS FIRST 
+    df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(1).astype(int)
+    df['Total Price'] = pd.to_numeric(df['Total Price'], errors='coerce').fillna(0.0).astype(float)
+    
+    # 2. FIX THE TEXT SECOND
+    text_cols = ['hidden_id', 'Date', 'Customer Name', 'Name', 'Phone', 'Status']
+    for col in text_cols:
+        df[col] = df[col].fillna("").astype(str).replace("nan", "")
         
-        st.markdown("### 🖨️ Live Print Preview")
-        # Renders the exact print layout dynamically safely inside the web browser dashboard
-        components.html(invoice_template_html, height=520, scrolling=True)
-        
-        if st.button("🚀 Save Invoice Data to Database & Print"):
-            # Construct the exact data dictionary row format matching your Google Sheet
-            new_row = {
-                "Invoice_No": inv_no,
-                "Invoice_Date": inv_date.strftime('%Y-%m-%d'),
-                "Customer_Name": cust_name.upper(),
-                "Contact_No": contact_no,
-                "Vehicle_No": veh_no.upper(),
-                "Vehicle_Name": veh_name.upper(),
-                "Total_KMs": total_kms,
-                "Mechanic_Names": mechanic_name.upper(),
-                "Items_JSON": json.dumps(st.session_state.current_items), # Packed inside Items_JSON column
-                "Total_Items_Count": len(st.session_state.current_items),
-                "GR_Total": gr_total,
-                "Labour_Charges": labour_charges,
-                "Discount": 0.0, # Kept safe for backward data consistency
-                "Net_Total": net_total
-            }
+    # 3. Clean up the pesky phone .0
+    df['Phone'] = df['Phone'].str.replace(r'\.0$', '', regex=True)
+    
+    return df[expected_columns]
+
+def save_data(df):
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    conn.update(worksheet="Sheet1", data=df)
+    st.cache_data.clear() 
+
+# --- 2. STREAMLIT UI & NAVIGATION ---
+st.title("📦 Daily Shop Ledger")
+
+# --- FLASH MESSAGES ---
+if 'flash_success' in st.session_state:
+    st.success(st.session_state.flash_success)
+    del st.session_state.flash_success
+if 'flash_error' in st.session_state:
+    st.error(st.session_state.flash_error)
+    del st.session_state.flash_error
+
+# --- PERSISTENT NAVIGATION MENU ---
+menu_options = ["📊 Dashboard", "➕ Add Entry", "🔍 Search", "✏️ Edit / Delete"]
+current_tab = st.radio("Navigation Menu", menu_options, horizontal=True, label_visibility="collapsed", key="main_nav")
+st.divider()
+
+# --- TAB 1: DASHBOARD ---
+if current_tab == "📊 Dashboard":
+    df = get_data()
+    today_str = datetime.today().strftime('%Y-%m-%d')
+    yesterday_str = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    
+    # --- FIXED SECTION: AGGREGATE STRICLY BASED ON PHONE ---
+    st.header("💰 Total Outstanding Dues by Customer")
+    if not df.empty:
+        borrowed_all = df[df['Status'] == 'Borrowed']
+        if not borrowed_all.empty:
+            # Group strictly by Phone, sum the money, and grab the first associated name
+            owe_summary = borrowed_all.groupby('Phone').agg({
+                'Customer Name': 'first',
+                'Total Price': 'sum'
+            }).reset_index()
             
-            # Save data to session state dataframe simulation
-            st.session_state.invoice_db = pd.concat([st.session_state.invoice_db, pd.DataFrame([new_row])], ignore_index=True)
-            st.success("Invoice successfully written to Database / Google Sheet storage row structure!")
-            st.session_state.current_items = [] # Reset basket buffer
+            # Reorder and rename columns for a cleaner UI display
+            owe_summary = owe_summary[['Customer Name', 'Phone', 'Total Price']]
+            owe_summary.columns = ['Customer Name', 'Phone/Contact', 'Total Owed (₹)']
+            owe_summary = owe_summary.sort_values(by='Total Owed (₹)', ascending=False)
+            
+            st.dataframe(owe_summary, use_container_width=True, hide_index=True)
+        else:
+            st.info("No active debts! Everyone is settled up.")
+    else:
+        st.info("No ledger data available.")
+        
+    st.divider()
 
-# --- TAB 1 & 3 PLACEHOLDERS FOR RUNNING COMPLETENESS ---
-with tab1:
-    st.markdown("## 📊 Workshop Metrics Overview")
-    st.dataframe(st.session_state.invoice_db, use_container_width=True)
+    st.header("🤝 Pending Borrowed Items")
+    if not df.empty:
+        borrowed_df = df[df['Status'] == 'Borrowed']
+    else:
+        borrowed_df = pd.DataFrame()
+    
+    if borrowed_df.empty:
+        st.info("No outstanding borrowed items!")
+    else:
+        for _, row in borrowed_df.iterrows():
+            col1, col2, col3, col4 = st.columns([1.5, 3, 2.5, 1.5])
+            col1.write(f"**{row['Date']}**")
+            col2.write(f"👤 **{row['Customer Name']}** \n\n Item: {row['Name']} (Qty: {row['Qty']})")
+            col3.write(f"📞 {row['Phone']} \n\n **₹{row['Total Price']}**")
+            
+            if col4.button("✔️ Mark Paid", key=f"pay_{row['hidden_id']}", use_container_width=True):
+                df.loc[df['hidden_id'] == row['hidden_id'], 'Status'] = 'Paid'
+                save_data(df)
+                st.session_state.flash_success = f"Marked entry for '{row['Customer Name']}' as paid!"
+                st.rerun()
 
-with tab3:
-    st.markdown("## 🔍 Quick Search Engine")
-    st.text_input("Search Vehicle Number Plate", value="MH05")
+    st.divider()
+
+    st.header("📅 Today's Report")
+    if not df.empty:
+        daily_df = df[df['Date'] == today_str]
+    else:
+        daily_df = pd.DataFrame(columns=df.columns)
+        
+    t_col1, t_col2 = st.columns(2)
+    t_qty = daily_df['Qty'].sum() if not daily_df.empty else 0
+    t_rev = daily_df['Total Price'].sum() if not daily_df.empty else 0.0
+    
+    t_col1.metric("Items Sold Today", int(t_qty))
+    t_col2.metric("Revenue Today", f"₹{t_rev:.2f}")
+    if not daily_df.empty:
+        st.dataframe(daily_df.drop(columns=['hidden_id'], errors='ignore'), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    st.header("⏮️ Yesterday's Report")
+    if not df.empty:
+        yest_df = df[df['Date'] == yesterday_str]
+    else:
+        yest_df = pd.DataFrame(columns=df.columns)
+        
+    y_col1, y_col2 = st.columns(2)
+    y_qty = yest_df['Qty'].sum() if not yest_df.empty else 0
+    y_rev = yest_df['Total Price'].sum() if not yest_df.empty else 0.0
+    
+    y_col1.metric("Items Sold Yesterday", int(y_qty))
+    y_col2.metric("Revenue Yesterday", f"₹{y_rev:.2f}")
+    if not yest_df.empty:
+        st.dataframe(yest_df.drop(columns=['hidden_id'], errors='ignore'), use_container_width=True, hide_index=True)
+
+# --- TAB 2: ADD ENTRY ---
+elif current_tab == "➕ Add Entry":
+    st.header("New Sale")
+    
+    with st.form("add_entry_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            cust_name = st.text_input("Customer Name (Optional for direct cash sale)")
+            name = st.text_input("Item Name")
+            qty = st.number_input("Quantity", min_value=1, value=None, placeholder="1")
+            
+        with col2:
+            total_price = st.number_input("Total Price (₹)", min_value=0.0, value=None, placeholder="0.00")
+            phone = st.text_input("Phone Number (Leave blank if paid)")
+            date_input = st.date_input("Date", datetime.today())
+            date_str = date_input.strftime('%Y-%m-%d') 
+            
+        submitted = st.form_submit_button("Save Entry", type="primary", use_container_width=True)
+        
+        if submitted:
+            clean_phone = phone.replace(" ", "").replace("-", "").replace("+", "")
+            final_qty = qty if qty is not None else 1
+            final_cust_name = cust_name.strip() if cust_name.strip() != "" else "Walk-in Customer"
+            
+            if not name:
+                st.error("Item Name is required.")
+            elif total_price is None:
+                st.error("Please enter the Total Price.")
+            elif clean_phone != "" and not clean_phone.isdigit():
+                st.error("Invalid Phone Number: Please enter numbers only.")
+            else:
+                status = "Borrowed" if phone.strip() != "" else "Paid"
+                
+                new_row = {
+                    'hidden_id': str(uuid.uuid4()), 
+                    'Date': date_str, 
+                    'Customer Name': final_cust_name,
+                    'Name': name, 
+                    'Qty': final_qty, 
+                    'Total Price': total_price, 
+                    'Phone': phone.strip(), 
+                    'Status': status
+                }
+                
+                # Fetch history, append, and save
+                df = get_data()
+                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                save_data(df)
+                
+                st.session_state.flash_success = f"Added {final_qty}x '{name}' for '{final_cust_name}' successfully!"
+                st.rerun()
+
+# --- TAB 3: SEARCH ---
+elif current_tab == "🔍 Search":
+    st.header("Search Database")
+    df = get_data()
+    
+    search_term = st.text_input("Type to search by Customer Name, Item Name, Date (YYYY-MM-DD), or Phone:")
+    
+    if search_term and not df.empty:
+        mask = (
+            df['Customer Name'].astype(str).str.contains(search_term, case=False, na=False) | 
+            df['Name'].astype(str).str.contains(search_term, case=False, na=False) | 
+            df['Phone'].astype(str).str.contains(search_term, case=False, na=False) |
+            df['Date'].astype(str).str.contains(search_term, case=False, na=False)
+        )
+        search_results = df[mask]
+        
+        if search_results.empty:
+            st.warning("No entries found.")
+        else:
+            st.info(f"Found {len(search_results)} matching entries:")
+            st.dataframe(search_results.drop(columns=['hidden_id'], errors='ignore'), use_container_width=True, hide_index=True)
+    elif search_term and df.empty:
+        st.warning("Database is empty.")
+
+# --- TAB 4: EDIT / DELETE ---
+elif current_tab == "✏️ Edit / Delete":
+    st.header("Modify Database")
+    df = get_data()
+    
+    if df.empty:
+        st.warning("No data available to edit.")
+    else:
+        df_sorted = df.sort_values(by='Date', ascending=False)
+        
+        edit_options_dict = {}
+        for _, row in df_sorted.iterrows():
+            phone_display = row['Phone'] if str(row['Phone']).strip() != '' else 'N/A'
+            label = f"{row['Date']} | Customer: {row['Customer Name']} | {row['Name']} | Phone: {phone_display}"
+            edit_options_dict[label] = row['hidden_id']
+        
+        selected_edit = st.selectbox(
+            "Search or Select entry to modify:", 
+            options=["-- Select an Entry --"] + list(edit_options_dict.keys())
+        )
+        
+        if selected_edit != "-- Select an Entry --":
+            target_id = edit_options_dict[selected_edit]
+            row_data = df[df['hidden_id'] == target_id].iloc[0]
+            
+            with st.form("edit_delete_form"):
+                st.write("### Edit Entry Details")
+                new_cust_name = st.text_input("Customer Name", value=row_data['Customer Name'])
+                new_name = st.text_input("Item Name", value=row_data['Name'])
+                new_qty = st.number_input("Qty", min_value=1, value=int(row_data['Qty']))
+                new_total = st.number_input("Total Price (₹)", min_value=0.0, value=float(row_data['Total Price']))
+                new_phone = st.text_input("Phone", value=row_data['Phone'])
+                new_date = st.text_input("Date (YYYY-MM-DD)", value=row_data['Date'])
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    update_btn = st.form_submit_button("Update Entry")
+                with col2:
+                    delete_btn = st.form_submit_button("Delete Entry", type="primary")
+                    
+                if update_btn:
+                    clean_phone_edit = str(new_phone).replace(" ", "").replace("-", "").replace("+", "")
+                    if clean_phone_edit != "" and not clean_phone_edit.isdigit():
+                        st.error("Invalid Phone Number: Please enter numbers only.")
+                    else:
+                        df.loc[df['hidden_id'] == target_id, 'Customer Name'] = new_cust_name
+                        df.loc[df['hidden_id'] == target_id, 'Name'] = new_name
+                        df.loc[df['hidden_id'] == target_id, 'Qty'] = new_qty
+                        df.loc[df['hidden_id'] == target_id, 'Total Price'] = new_total
+                        df.loc[df['hidden_id'] == target_id, 'Phone'] = str(new_phone).strip()
+                        df.loc[df['hidden_id'] == target_id, 'Date'] = new_date
+                        df.loc[df['hidden_id'] == target_id, 'Status'] = 'Borrowed' if str(new_phone).strip() != "" else 'Paid'
+                        
+                        save_data(df)
+                        st.session_state.flash_success = f"Entry for '{new_cust_name}' updated successfully!"
+                        st.rerun()
+                        
+                if delete_btn:
+                    df = df[df['hidden_id'] != target_id]
+                    save_data(df)
+                    st.session_state.flash_error = "Entry permanently deleted from Google Sheets!"
+                    st.rerun()
