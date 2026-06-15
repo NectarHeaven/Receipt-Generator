@@ -53,20 +53,12 @@ def safe_date(val):
         pass
     return date.today()
 
-def mech_col(df):
-    if 'Mechanic_Names' in df.columns:
-        return 'Mechanic_Names'
-    if 'Mechanic_Name' in df.columns:
-        return 'Mechanic_Name'
-    return None
-
 # ─────────────────────────────────────────────
-# 1. PDF GENERATOR (FIXED GRIDLINES & BOUNDARIES)
+# 1. PDF GENERATOR (DYNAMIC GRIDS & BOUNDARIES)
 # ─────────────────────────────────────────────
 class ReceiptPDF(FPDF):
     def header(self):
-        # Full content bounding box frame
-        self.rect(10, 10, 190, 246)
+        # We handle dynamic rectangles manually in generate_pdf to ensure perfect closing lines
         self.set_xy(10, 12); self.set_font("helvetica", "B", 18)
         self.cell(110, 8, "SHREE GURUDEV AUTOMOBILES", border=0, ln=1, align="L")
         self.set_xy(10, 20); self.set_font("helvetica", "B", 8)
@@ -80,8 +72,7 @@ class ReceiptPDF(FPDF):
             border=0, align="R")
 
     def footer(self):
-        # Absolute positioned footer safely outside the main bounding box
-        self.set_xy(10, 260); self.set_font("helvetica", "", 9)
+        self.set_xy(10, 282); self.set_font("helvetica", "", 9)
         self.cell(0, 5, f"PAGE NO. : {self.page_no()}", align="L")
 
     def add_customer_details(self, data):
@@ -128,35 +119,34 @@ class ReceiptPDF(FPDF):
         self.cell(25, 8, "AMOUNT", align="R")
         self.ln(8); self.line(10, 62, 200, 62)
 
-    def draw_grid_lines(self, end_y=220):
-        # Vertical structural grids mapping across layout columns precisely
-        self.line(20,  54, 20,  end_y)  # After SNo
-        self.line(110, 54, 110, 256)  # After Description (Runs down through total elements)
-        self.line(125, 54, 125, end_y)  # After Qty
-        self.line(150, 54, 150, 256)  # After MRP (Runs through the totals values border)
-        self.line(175, 54, 175, end_y)  # After Disc
+    def draw_grid_lines(self, end_y):
+        # Draw explicit bounding lines down to the exact closing coordinate of the table data
+        self.line(10, 10, 10, end_y)   # Left border
+        self.line(200, 10, 200, end_y) # Right border
+        self.line(20, 54, 20, end_y)   # After SNo
+        self.line(110, 54, 110, end_y) # After Description
+        self.line(125, 54, 125, end_y) # After Qty
+        self.line(150, 54, 150, end_y) # After MRP
+        self.line(175, 54, 175, end_y) # After Disc
+        self.line(10, end_y, 200, end_y) # Base edge line
 
-    def add_footer_totals(self, d):
-        # Closes off the active line items table cleanly
-        self.line(10, 220, 200, 220)
-        
-        # Left side layout items
-        self.set_xy(10, 221); self.set_font("helvetica", "B", 9)
+    def add_footer_totals(self, d, start_y):
+        # Draw totals section immediately following the items table box
+        self.set_xy(10, start_y + 2); self.set_font("helvetica", "B", 9)
         self.cell(100, 6, f"TOTAL ITEMS {d.get('Total_Items_Count','')}", align="L")
-        self.line(10, 228, 110, 228)
-        self.set_xy(10, 230)
+        self.line(10, start_y + 9, 110, start_y + 9)
+        self.set_xy(10, start_y + 11)
         mc = d.get('Mechanic_Names', d.get('Mechanic_Name', ''))
         self.cell(100, 6, f"MECHANIC : {mc}", align="L")
-        self.set_xy(10, 244); self.set_font("helvetica", "I", 12)
+        self.set_xy(10, start_y + 23); self.set_font("helvetica", "I", 12)
         self.cell(100, 6, "*** THANK YOU ***", align="C")
 
-        # Right side pricing totals layout grid mapping
         self.set_font("helvetica", "", 9)
         rows = [
             ("SUBTOTAL",     float(d.get('GR_Total', 0))),
             ("LABOUR CHRGS", float(d.get('Labour_Charges', 0))),
         ]
-        y = 220
+        y = start_y
         for label, val in rows:
             self.set_xy(110, y)
             self.cell(40, 6, label, align="R")
@@ -167,19 +157,31 @@ class ReceiptPDF(FPDF):
         self.cell(40, 12, "NET TOTAL", align="R")
         self.cell(50, 12, f"{float(d.get('Net_Total', 0)):.2f}", align="R")
         
-        # Intermediate accounting lines underneath Net Total
         self.line(110, y + 10, 200, y + 10)
         self.line(110, y + 11.5, 200, y + 11.5)
+        
+        # Enclose the outer totals window block
+        self.line(10, start_y, 10, y + 14)
+        self.line(200, start_y, 200, y + 14)
+        self.line(110, start_y, 110, y + 14)
+        self.line(150, start_y, 150, y + 14)
+        self.line(10, y + 14, 200, y + 14)
 
 def generate_pdf(data):
     pdf = ReceiptPDF(orientation="P", unit="mm", format="A4")
+    
     def new_page():
         pdf.add_page()
+        pdf.line(10, 10, 200, 10) # Top border line
         pdf.add_customer_details(data)
         pdf.add_table_headers()
         
-    new_page(); pdf.set_font("helvetica", "", 9)
-    for idx, item in enumerate(parse_items_json(data.get('Items_JSON', '[]'))):
+    new_page()
+    pdf.set_font("helvetica", "", 9)
+    
+    items = parse_items_json(data.get('Items_JSON', '[]'))
+    
+    for idx, item in enumerate(items):
         if not isinstance(item, dict): continue
         desc   = str(item.get('Description', item.get('DESCRIPTION', '')))
         qty    = str(item.get('Qty',    item.get('QTY',    '')))
@@ -188,10 +190,16 @@ def generate_pdf(data):
         amount = float(item.get('Amount', item.get('AMOUNT', 0)))
         
         sy = pdf.get_y()
-        # Safe threshold padding before page-break execution to avoid overlapping content
-        if sy > 212:
-            pdf.draw_grid_lines(end_y=220); new_page()
-            pdf.set_font("helvetica", "", 9); sy = pdf.get_y()
+        
+        # Maximum item y limit context depending if it's the last page or an middle overflow page
+        is_last_item = (idx == len(items) - 1)
+        max_y_allowed = 230 if is_last_item else 270
+        
+        if sy > max_y_allowed:
+            pdf.draw_grid_lines(end_y=sy)
+            new_page()
+            pdf.set_font("helvetica", "", 9)
+            sy = pdf.get_y()
             
         pdf.set_xy(10, sy); pdf.cell(10, 6, str(idx+1), border=0, align="C")
         pdf.set_xy(20, sy); pdf.multi_cell(90, 6, desc, border=0, align="L")
@@ -202,8 +210,16 @@ def generate_pdf(data):
         pdf.set_xy(175, sy); pdf.cell(25, h, f"{amount:.2f}", border=0, align="R")
         pdf.set_y(ey)
         
-    pdf.draw_grid_lines(end_y=220)
-    pdf.add_footer_totals(data)
+    final_y = pdf.get_y()
+    
+    # If the last item left no room for totals section underneath, push totals safely to next page
+    if final_y > 234:
+        pdf.draw_grid_lines(end_y=final_y)
+        new_page()
+        final_y = pdf.get_y()
+        
+    pdf.draw_grid_lines(end_y=final_y)
+    pdf.add_footer_totals(data, start_y=final_y)
     return bytes(pdf.output())
 
 # ─────────────────────────────────────────────
